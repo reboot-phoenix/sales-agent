@@ -179,7 +179,7 @@ async def sweep_unenriched(redis_client, db_pool, lookback_hours: int = 12) -> i
             LEFT JOIN hr_contacts hc ON l.hr_contact_id = hc.id
             WHERE COALESCE(hc.personal_email, '') = ''
               AND COALESCE(hc.personal_mobile, '') = ''
-              AND l.pipeline_stage NOT IN ('contacted')
+              AND l.pipeline_stage NOT IN ('contacted', 'sent', 'delivered', 'replied', 'converted', 'suppressed', 'bounced')
               AND NOT l.do_not_contact
               AND l.id NOT IN (
                     SELECT lead_id FROM enrichment_log
@@ -240,7 +240,7 @@ async def sweep_unverified(redis_client, db_pool, limit: int = 200) -> int:
                    OR COALESCE(hc.personal_mobile, '') <> '')
               AND (l.email_status IS NULL OR l.email_status = ''
                    OR l.email_status = 'unknown')
-              AND l.pipeline_stage NOT IN ('contacted')
+              AND l.pipeline_stage NOT IN ('contacted', 'sent', 'delivered', 'replied', 'converted', 'suppressed', 'bounced')
               AND NOT l.do_not_contact
               AND l.id NOT IN (
                     SELECT lead_id FROM verification_log
