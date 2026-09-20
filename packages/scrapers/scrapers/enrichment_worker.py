@@ -1031,13 +1031,15 @@ async def process_enrichment_job(
 
     logger.info(f"Enrichment complete for lead {lead_id}: provider={used_provider}, status={status}")
 
-    # Chain to verification only when a real contact exists. No-contact leads are
-    # parked as 'contact_unavailable' and retried by the sweep — we never fabricate
-    # a contact nor spend a verification call on an empty target.
-    if enrichment_result and (
-        enrichment_result.get("hr_email")
-        or enrichment_result.get("hr_mobile")
-    ):
+    # Chain to verification whenever the lead actually HAS a contactable
+    # channel — not just when the paid-provider chain found one. The HR
+    # extractor (hiring-team OSINT) writes contacts via `person`, which is
+    # the exact condition that marks the lead 'enriched'; gating on
+    # `enrichment_result` alone left 468 contactable leads unverified because
+    # their contact came from the extractor path instead. No-contact leads
+    # stay parked as 'contact_unavailable' for the sweep — never fabricated,
+    # never a wasted verification call on an empty target.
+    if has_contactable:
         await chain_lead(redis_client, "verification_queue:requests", lead_id,
                          requested_by=requested_by)
 

@@ -64,7 +64,13 @@ SOURCE_EXTRAS: dict[str, list[str]] = {
     "breezy": ["breezy", "remotemigration", "wethecollective", "growbots", "applitools"],
     "teamtailor": ["deezer", "productmarketing", "testworks", "blueground"],
     # verified public boards (200 OK in pre-flight, 2026-09-14)
-    "bamboohr": ["freshworks"],
+    # BambooHR re-check 2026-09-20: most {slug}.bamboohr.com/careers/list boards
+    # now 302 to www.bamboohr.com (legacy careers page retired product-wide).
+    # Live 200-OK boards verified today: front, zapier, helpscout, close
+    # (openings vary by day — the sweep still tries every one of them).
+    # freshworks STAYS in the sweep: its BambooHR probe is a cheap 302 skip,
+    # and the company remains covered by its live Lever + SmartRecruiters boards.
+    "bamboohr": ["freshworks", "front", "zapier", "helpscout", "close"],
     "personio": ["personio"],
 }
 

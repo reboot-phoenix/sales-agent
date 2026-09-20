@@ -279,6 +279,33 @@ async def army_run(req: ScrapeRequest, _auth: bool = Depends(require_worker_key)
     return {"message": "Army run queued", "run_id": run_id, "sweep_reenqueued": swept}
 
 
+async def periodic_sweeps(redis_client, db_pool, interval: int | None = None) -> None:
+    """Hourly self-healing: re-enrich still-contactless leads, re-verify still-
+    unverified contacts. Without this, a lead that fails OSINT right after the
+    post-scrape sweep waits a full day for its next retry; an hourly cadence
+    keeps the 12h rate-limit windows flowing so coverage converges instead of
+    stepping once a day. Set SWEEP_INTERVAL_SECONDS=0 to disable.
+    """
+    interval = interval if interval is not None else int(
+        os.environ.get("SWEEP_INTERVAL_SECONDS", "3600") or 3600
+    )
+    if interval <= 0 or db_pool is None:
+        return
+    from scrapers.scheduler import sweep_unenriched, sweep_unverified
+    log = logging.getLogger(__name__)
+    while True:
+        try:
+            await asyncio.sleep(interval)
+            n_enrich = await sweep_unenriched(redis_client, db_pool)
+            n_verify = await sweep_unverified(redis_client, db_pool)
+            if n_enrich or n_verify:
+                log.info(f"Periodic sweeps: re-enriched {n_enrich}, re-verified {n_verify}")
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:  # noqa: BLE001
+            log.warning(f"Periodic sweep failed: {e}")
+
+
 async def start_consumers():
     """Start background queue consumers per SRS §9.1."""
     from scrapers.scrape_consumer import consume_scrape_queue
@@ -318,6 +345,34 @@ async def start_consumers():
             logger.info(f"Boot reclaim: {reclaimed} (DLQ depth total: {total_dlq})")
         except Exception as e:  # noqa: BLE001
             logging.getLogger(__name__).warning(f"Boot reclaim failed (queues still consumable): {e}")
+        # DLQ replay: anything parked in {queue}:dlq already exhausted its
+        # in-run attempts, but those failures were usually transient (search
+        # engines 429ing, a dead IPv6 route, a restarting dependency). Left
+        # alone they rot forever — 138 leads were stranded there while the
+        # daily sweeps kept only the DB-side backlog healthy. Replay a bounded
+        # slice back into the live queue at boot (enrichment first: re-running
+        # it re-chains the downstream stages).
+        try:
+            from scrapers.queue import dlq_depth
+            _replayed = {}
+            for _qn in ("enrichment_queue:requests", "verification_queue:requests",
+                        "draft_queue:requests", "verify_send_queue:requests",
+                        "raw_leads_queue:requests"):
+                _depth = await dlq_depth(redis_client, _qn)
+                if not _depth:
+                    continue
+                _n = 0
+                while _n < min(_depth, 25):
+                    raw = await redis_client.rpop(f"{_qn}:dlq")
+                    if raw is None:
+                        break
+                    await redis_client.lpush(_qn, raw)
+                    _n += 1
+                _replayed[_qn] = _n
+            if _replayed:
+                logging.getLogger(__name__).warning(f"DLQ replay at boot: {_replayed}")
+        except Exception as e:  # noqa: BLE001
+            logging.getLogger(__name__).warning(f"DLQ replay failed (skipped): {e}")
         tasks.append(asyncio.create_task(consume_scrape_queue(redis_client, db_pool)))
         tasks.append(asyncio.create_task(run_normalizer(redis_client, db_pool)))
         # daily full-fleet heartbeat (India jobs -> enrich -> verify -> draft -> send)
@@ -337,6 +392,9 @@ async def start_consumers():
             tasks.append(asyncio.create_task(consume_draft_queue(redis_client, db_pool)))
             tasks.append(asyncio.create_task(consume_send_queue(redis_client, db_pool)))
             tasks.append(asyncio.create_task(consume_verify_send_queue(redis_client, db_pool)))
+            # Hourly self-healing sweeps (re-enrich + re-verify) so coverage
+            # converges continuously instead of once per daily run.
+            tasks.append(asyncio.create_task(periodic_sweeps(redis_client, db_pool)))
 
     if tasks:
         await asyncio.gather(*tasks, return_exceptions=True)

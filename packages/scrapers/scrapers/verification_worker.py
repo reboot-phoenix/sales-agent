@@ -84,12 +84,17 @@ def classify_reacher_result(result: dict[str, Any]) -> str:
 
     if hard_bounce:
         return "invalid"
-    if is_reachable == "true":
+    # Reacher >=0.8 serializes Reachable as safe|risky|invalid|unknown (the
+    # legacy true/false booleans still appear from older pinned builds), so
+    # both scales must map or every fresh verdict degrades to unknown.
+    if is_reachable in ("true", "safe"):
         return "valid"
-    if is_reachable == "false":
+    if is_reachable == "risky":
+        # accept-all / gray area: SRS maps these to catch_all (deliverable,
+        # not individually confirmed).
+        return "catch_all"
+    if is_reachable in ("false", "invalid"):
         return "disposable" if is_disposable else "invalid"
-    if is_reachable == "invalid":
-        return "invalid"
     if is_reachable == "unknown":
         if is_disposable:
             return "disposable"

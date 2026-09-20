@@ -215,6 +215,63 @@ async def sweep_unenriched(redis_client, db_pool, lookback_hours: int = 12) -> i
     return n
 
 
+async def sweep_unverified(redis_client, db_pool, limit: int = 200) -> int:
+    """Verification catch-up sweep — closes the verify gap on live contacts.
+
+    Leads whose contact was found but never verified (the one-shot chain only
+    verified provider-sourced emails, and crashes/DLQs ate the rest) sit at
+    email_status='unknown' forever. This sweep re-enqueues every contactable
+    lead that has no recent verification attempt, so email/WhatsApp status
+    converges to a real deliverability verdict across runs.
+
+    Mirrors sweep_unenriched's rate-limit discipline: leads verified within
+    the last 12h are skipped, and leads already pending in the verification
+    queue are subtracted so a draining backlog is never double-enqueued.
+    Returns the number of leads re-enqueued.
+    """
+    if db_pool is None:
+        return 0
+    async with db_pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT l.id FROM leads l
+            JOIN hr_contacts hc ON l.hr_contact_id = hc.id
+            WHERE (COALESCE(hc.personal_email, '') <> ''
+                   OR COALESCE(hc.personal_mobile, '') <> '')
+              AND (l.email_status IS NULL OR l.email_status = ''
+                   OR l.email_status = 'unknown')
+              AND l.pipeline_stage NOT IN ('contacted')
+              AND NOT l.do_not_contact
+              AND l.id NOT IN (
+                    SELECT lead_id FROM verification_log
+                    WHERE created_at > NOW() - INTERVAL '12 hours'
+                  )
+            ORDER BY l.created_at ASC
+            LIMIT $1
+            """,
+            limit,
+        )
+    pending: set[str] = set()
+    try:
+        raw_items = await redis_client.lrange("verification_queue:requests", 0, -1)
+        for item in raw_items:
+            try:
+                pending.add(str(json.loads(item).get("lead_id", "")))
+            except Exception:  # noqa: BLE001
+                continue
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"unverified sweep could not peek verification queue: {e}")
+    n = 0
+    for r in rows:
+        if str(r["id"]) in pending:
+            continue
+        await _enqueue_lead(redis_client, "verification_queue:requests", r["id"])
+        n += 1
+    if n:
+        logger.info(f"Verification catch-up sweep: re-enqueued {n} unverified contactable leads")
+    return n
+
+
 async def _enqueue_lead(redis_client, queue: str, lead_id) -> None:
     try:
         await redis_client.lpush(queue, json.dumps({
@@ -290,6 +347,12 @@ async def daily_scrape_scheduler(redis_client, sources: list[str] | None = None,
         await sweep_unenriched(redis_client, db_pool)
     except Exception as e:  # noqa: BLE001
         logger.warning(f"Boot re-enrichment sweep failed: {e}")
+    # Same for verification: contacts found but never verified (chain gap,
+    # crash, DLQ) get their deliverability verdict without waiting a day.
+    try:
+        await sweep_unverified(redis_client, db_pool)
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"Boot verification catch-up sweep failed: {e}")
 
     while True:
         now = datetime.now(timezone.utc)
@@ -318,6 +381,12 @@ async def daily_scrape_scheduler(redis_client, sources: list[str] | None = None,
             await sweep_unenriched(redis_client, db_pool)
         except Exception as e:  # noqa: BLE001
             logger.warning(f"scheduled re-enrichment sweep failed: {e}")
+        # Verify every contact that enrichment found but the chain never
+        # verified (extractor-sourced emails, crash gaps, DLQ strays).
+        try:
+            await sweep_unverified(redis_client, db_pool)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"scheduled verification catch-up sweep failed: {e}")
         # Once-daily data-retention pass (opt-in via RETENTION_* env; no-op off).
         try:
             await enforce_retention(db_pool)

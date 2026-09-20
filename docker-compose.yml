@@ -97,6 +97,17 @@ services:
       DATABASE_URL: postgresql://postgres:postgres@postgres:5432/leads_db
       REDIS_URL: redis://redis:6379
       REACHER_URL: http://reacher:3000
+      # primp/rustls (ddgs search engines) does not reliably fall back to the
+      # OS trust store on slim images: point it at the system bundle explicitly,
+      # else OSINT search engines fail with "invalid peer certificate".
+      SSL_CERT_FILE: /etc/ssl/certs/ca-certificates.crt
+      SSL_CERT_DIR: /etc/ssl/certs
+    # Pin resolvers: Docker's embedded 127.0.0.11 forwards to whatever the
+    # host uses (here, an IPv6 nameserver on a dead route) — that made MX and
+    # search-engine lookups flap. Public resolvers keep it deterministic.
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
     depends_on:
       - postgres
       - redis
@@ -116,6 +127,13 @@ services:
     # the verifier's behaviour, or its response contract, on any redeploy).
     image: reacherhq/check-if-email-exists@sha256:0c38855658952b92e6d5300c79c5578b0a1f81bab8eacb3693fdd15a9b74a017
     container_name: sales-agent-reacher
+    # The embedded Docker resolver forwards to host upstreams (incl. a dead
+    # IPv6 one); Reacher's Rust resolver could not resolve any MX host through
+    # it ("could not resolve address (... 25)"), degrading EVERY verification
+    # to unknown. Explicit public resolvers fix MX resolution.
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
     ports:
       - "127.0.0.1:5050:3000"
     restart: unless-stopped

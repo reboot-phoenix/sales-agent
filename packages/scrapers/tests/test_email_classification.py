@@ -25,6 +25,9 @@ def _r(reachable="unknown", *, disposable=False, role=False, smtp_error=None):
 
 @pytest.mark.parametrize("payload,want", [
     (_r("true"), "valid"),
+    # Reacher >=0.8 scale (the pinned 0.8.22 image speaks this dialect).
+    (_r("safe"), "valid"),
+    (_r("risky"), "catch_all"),
     (_r("false"), "invalid"),
     (_r("invalid"), "invalid"),
     (_r("false", disposable=True), "disposable"),
