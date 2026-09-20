@@ -21,6 +21,44 @@ from .queue import requeue_or_dlq, reliable_brpop, ack
 
 logger = logging.getLogger(__name__)
 
+# Cooperative army halt. POST /army/stop sets this key (TTL-bounded so a stop
+# can never wedge future scheduled runs); the consumer checks it before each
+# job and every few seconds mid-run, cancelling in-flight sources promptly.
+HALT_KEY = "army:halt"
+HALT_TTL_SECONDS = 600
+
+
+async def halt_requested(redis_client) -> bool:
+    """True when an operator stopped the army. Fail-closed False: a dead Redis
+    must never read as 'halt' (that would cancel every run on a cache blip)."""
+    try:
+        return bool(await redis_client.exists(HALT_KEY))
+    except Exception:  # noqa: BLE001
+        return False
+
+
+async def scrape_all_sources(sources: list[str], scrape_fn, redis_client) -> bool:
+    """Run one source-fn per source concurrently. Returns True when an operator
+    halt cancelled the run (pending sources cancelled; finished work kept).
+
+    Cancellation is safe: each source owns its HTTP session and releases its DB
+    connection in a finally block, so a cancelled task unwinds cleanly instead
+    of leaking. Raises CancelledError only if THIS task is cancelled.
+    """
+    tasks = {asyncio.create_task(scrape_fn(s)): s for s in sources}
+    pending = set(tasks)
+    while pending:
+        done, pending = await asyncio.wait(pending, timeout=5)
+        for d in done:
+            if not d.cancelled():
+                d.exception()  # retrieve to avoid 'never retrieved' warnings; errors are recorded by scrape_fn
+        if pending and await halt_requested(redis_client):
+            for t in pending:
+                t.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
+            return True
+    return False
+
 SCRAPER_MAP = {
     "remoteok": ("scrapers.remoteok", "RemoteOkScraper"),
     "arbeitnow": ("scrapers.arbeitnow", "ArbeitnowScraper"),
@@ -72,6 +110,8 @@ SCRAPER_MAP = {
     "amazon": ("scrapers.amazon_jobs", "AmazonJobsScraper"),
     "elitmus": ("scrapers.elitmus", "ElitmusScraper"),
     "freejobalert": ("scrapers.freejobalert", "FreeJobAlertScraper"),
+    "hackernews": ("scrapers.hackernews", "HackerNewsScraper"),
+    "ripplehire": ("scrapers.ripplehire", "RippleHireScraper"),
 }
 DEFAULT_SOURCES = [
     # India-native fresher/entry-level portals (primary target).
@@ -80,6 +120,9 @@ DEFAULT_SOURCES = [
     "unstop", "iimjobs", "jobinsider", "hirist", "classicjobs",
     "hackerearth", "ambitionbox", "offcampus", "hasjob",
     "elitmus", "freejobalert",
+    # First-party hiring posts (HN Who's Hiring) + RippleHire campus/volume
+    # discovery. Both gated hard on fresher/India relevance downstream.
+    "hackernews", "ripplehire",
     # Public ATS career pages (real employer domains; India-filtered downstream,
     # best source of postable HR contacts). Greenhouse/Lever/Workday/Ashby/etc.
     "greenhouse", "lever", "workday", "ashby", "smartrecruiters",
@@ -207,6 +250,32 @@ async def consume_scrape_queue(
             run_type = job.get("run_type", "manual")
             triggered_by = job.get("triggered_by")
 
+            # Stop honoring point 1: a queued job that starts after an operator
+            # halt is skipped, recorded as cancelled, and acked — never run.
+            if await halt_requested(redis_client):
+                logger.info(f"Scrape job {run_id} skipped: army halted by operator")
+                if db_pool:
+                    async with db_pool.acquire() as conn:
+                        await conn.execute(
+                            """
+                            INSERT INTO scrape_runs
+                              (id, started_at, finished_at, sources_attempted,
+                               sources_succeeded, sources_circuit_broken, leads_found, errors)
+                            VALUES ($1, NOW(), NOW(), $2, 0, '{}', 0, $3)
+                            """,
+                            run_id,
+                            len(sources),
+                            json.dumps({
+                                "sources": sources,
+                                "run_type": run_type,
+                                "triggered_by": triggered_by,
+                                "cancelled": "stopped by operator before start",
+                            }),
+                        )
+                await ack(redis_client, "scrape_queue:requests", raw_msg)
+                processed += 1
+                continue
+
             logger.info(f"Scrape job {run_id} ({run_type}): sources={sources}")
 
             results: dict[str, Any] = {
@@ -234,7 +303,13 @@ async def consume_scrape_queue(
                     if db and db_pool:
                         await db_pool.release(db)
 
-            await asyncio.gather(*[scrape_source(s) for s in sources])
+            # Halt-aware fan-out: a stop cancels pending sources promptly
+            # (finished work is kept). Plain gather would run to completion
+            # regardless of the operator.
+            stopped = await scrape_all_sources(sources, scrape_source, redis_client)
+            if stopped:
+                results["sources_failed"].append({"source": "_army", "error": "stopped by operator"})
+                logger.info(f"Scrape job {run_id} stopped by operator: {results}")
 
             # Persist run report to scrape_runs (§9.6)
             if db_pool:
@@ -260,6 +335,7 @@ async def consume_scrape_queue(
                             "run_type": run_type,
                             "triggered_by": triggered_by,
                             "errors": results["sources_failed"],
+                            "stopped": stopped,
                         }),
                     )
 
@@ -270,15 +346,20 @@ async def consume_scrape_queue(
             # Wave quality gate (Fallback Corps): on a failed or barren wave,
             # sibling soldiers compensate with ONE bounded fallback wave.
             # Compensation jobs (depth>=1) never compensate further: no chains.
-            try:
-                from .army_registry import maybe_fallback_wave
-                sibs = await maybe_fallback_wave(
-                    redis_client, job, sources, results, per_source_counts,
-                )
-                if sibs:
-                    logger.warning(f"Fallback wave queued -> {sibs}")
-            except Exception as e:  # noqa: BLE001
-                logger.debug(f"Fallback-wave check skipped: {e}")
+            # Suppressed after an operator stop: re-enqueueing sources the user
+            # just halted would restart the very work they cancelled.
+            if not stopped:
+                try:
+                    from .army_registry import maybe_fallback_wave
+                    sibs = await maybe_fallback_wave(
+                        redis_client, job, sources, results, per_source_counts,
+                    )
+                    if sibs:
+                        logger.warning(f"Fallback wave queued -> {sibs}")
+                except Exception as e:  # noqa: BLE001
+                    logger.debug(f"Fallback-wave check skipped: {e}")
+            else:
+                logger.info(f"Fallback wave suppressed for stopped job {run_id}")
 
         except json.JSONDecodeError as e:
             logger.error(f"Invalid JSON in scrape_queue: {e}")

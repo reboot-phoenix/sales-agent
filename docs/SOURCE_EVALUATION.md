@@ -190,3 +190,18 @@ JS-walled, non-ATS; deferred with NCS), Razorpay/Flipkart/Swiggy/PhonePe
 X advanced search (auth-walled), TPO private lists / alumni groups /
 referral forms / founder DMs (private access — no automation path),
 VC/funding tracking (no job data), Telugu-only channels (English pipeline).
+
+## Iceberg batch 6 (2026-09-20): arsenal expansion
+
+### Integrated
+| Item | Proof |
+|---|---|
+| HackerNews Who's Hiring (`scrapers/hackernews.py`, defaults) | `hn.algolia.com/api/v1/search_by_date?tags=story` 200 JSON keyless; newest `whoishiring` thread -> `/items/{id}` comments; hard gate on fresher/India; first-party emails kept as hr_email |
+| RippleHire discovery (`scrapers/ripplehire.py`, defaults) | No stable board API exists (boards live on customer domains — will not invent one); keyless DDG-html dorks over indexed RippleHire pages + relevance gate |
+| FreshersVoice (into `offcampus_aggregators.SITES`) | `sitemap_index.xml` LIVE 2026-09-20, Yoast, posts dated 2026-09-19; fits existing sitemap flow (lastmod-sorted) |
+
+### Evaluated, cut with evidence
+Hirect (origin transport error — no web surface to scrape), YCombinator jobs
+(JS SPA, no stable public JSON — client-side Algolia only), Keka/Darwinbox/
+Freshteam/ZohoRecruit boards (per-customer subdomains, no verifiable generic
+pattern — dork discovery via DuckDuckGo covers them instead of fabricated URLs).

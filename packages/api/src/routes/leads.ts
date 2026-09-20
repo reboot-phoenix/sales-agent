@@ -5,7 +5,7 @@ import { likeContains } from '../utils/sql';
 import { getRedis } from '../utils/redis';
 import { authenticate } from '../middleware/auth';
 import { authorize } from '../middleware/auth';
-import { recomputeLeadScore, scoreExplain } from '../utils/scoring';
+import { recomputeLeadScore, scoreExplain, toScore10 } from '../utils/scoring';
 import { logAuditEvent } from '../utils/audit';
 import { publishSSE } from '../utils/sse';
 import { calculateCandidateSimilarity } from '../utils/dedup';
@@ -23,6 +23,12 @@ const paginationSchema = z.object({
     'pipeline_stage', 'data_quality', 'employment_type', 'department']).default('created_at'),
   sort_order: z.enum(['asc', 'desc']).default('desc'),
   score_band: z.enum(['hot', 'warm', 'cold']).optional(),
+  // Contact depth: none = no HR row at all; partial = row exists but no
+  // email/mobile yet; enriched = reachable email or mobile present;
+  // verified = email deliverable or WhatsApp registered.
+  contact: z.enum(['none', 'partial', 'enriched', 'verified']).optional(),
+  // Stored freshness label (writers set it, scheduler reclassifies).
+  freshness: z.enum(['fresh', 'recent', 'older', 'unknown']).optional(),
   pipeline_stage: z
     .enum(['discovered', 'enriching', 'enriched', 'verifying', 'verified', 'drafted', 'contacted',
       'ready_for_outreach', 'message_generated', 'send_pending', 'sent', 'delivered', 'replied',
@@ -133,6 +139,20 @@ function buildLeadFilters(q: any, user: { id: string; role: string }) {
      values.push(q.score_band);
      paramIdx++;
    }
+   if (q.contact === 'none') {
+     conditions.push(`l.hr_contact_id IS NULL`);
+   } else if (q.contact === 'partial') {
+     conditions.push(`(l.hr_contact_id IS NOT NULL AND COALESCE(hc.personal_email, '') = '' AND COALESCE(hc.personal_mobile, '') = '')`);
+   } else if (q.contact === 'enriched') {
+     conditions.push(`(COALESCE(hc.personal_email, '') <> '' OR COALESCE(hc.personal_mobile, '') <> '')`);
+   } else if (q.contact === 'verified') {
+     conditions.push(`(l.email_status = 'valid' OR l.whatsapp_status = 'registered')`);
+   }
+   if (q.freshness) {
+     conditions.push(`jp.freshness_category = $${paramIdx}`);
+     values.push(q.freshness);
+     paramIdx++;
+   }
    if (q.pipeline_stage) {
      conditions.push(`l.pipeline_stage = $${paramIdx}`);
      values.push(q.pipeline_stage);
@@ -210,7 +230,7 @@ function buildLeadFilters(q: any, user: { id: string; role: string }) {
      conditions.push(`(jp.salary_min IS NULL AND COALESCE(jp.salary_range, '') = '')`);
    }
    if (q.filter) {
-     conditions.push(`(c.name ILIKE $${paramIdx} ESCAPE '\\' OR c.domain ILIKE $${paramIdx} ESCAPE '\\' OR jp.title ILIKE $${paramIdx} ESCAPE '\\')`);
+     conditions.push(`(c.name ILIKE $${paramIdx} ESCAPE '\\' OR c.domain ILIKE $${paramIdx} ESCAPE '\\' OR jp.title ILIKE $${paramIdx} ESCAPE '\\' OR jp.source_site ILIKE $${paramIdx} ESCAPE '\\' OR jp.city ILIKE $${paramIdx} ESCAPE '\\' OR jp.state ILIKE $${paramIdx} ESCAPE '\\' OR hc.full_name ILIKE $${paramIdx} ESCAPE '\\' OR hc.personal_email ILIKE $${paramIdx} ESCAPE '\\' OR hc.personal_mobile ILIKE $${paramIdx} ESCAPE '\\')`);
      values.push(likeContains(q.filter));
      paramIdx++;
    }
@@ -452,7 +472,7 @@ export const leadsRoutes: FastifyPluginAsync = async (fastify) => {
 
       const explained = await scoreExplain(sql, id);
       if (!explained) return reply.status(404).send({ error: 'Lead not found' });
-      return explained;
+      return { ...explained, score_10: toScore10(explained.score) };
     },
   );
 
@@ -1646,24 +1666,48 @@ export const leadsRoutes: FastifyPluginAsync = async (fastify) => {
         return reply.status(404).send({ error: 'Target lead not found' });
       }
 
-      await sql.unsafe(
-        `UPDATE enrichment_log SET lead_id = $1 WHERE lead_id = $2`,
-        [merge_into_id, id],
-      );
-      await sql.unsafe(
-        `UPDATE verification_log SET lead_id = $1 WHERE lead_id = $2`,
-        [merge_into_id, id],
-      );
-      await sql.unsafe(
-        `UPDATE outreach_drafts SET lead_id = $1 WHERE lead_id = $2`,
-        [merge_into_id, id],
-      );
-      await sql.unsafe(
-        `UPDATE outreach_log SET lead_id = $1 WHERE lead_id = $2`,
-        [merge_into_id, id],
-      );
+      // Single transaction: any failure rolls back all re-parents + delete.
+      // Falls back to sequential writes only when the DB client lacks
+      // `.begin` (unit-test mock); production `postgres.Sql` always has it.
+      const doMerge = async (tx: any) => {
+        await tx.unsafe(
+          `UPDATE enrichment_log SET lead_id = $1 WHERE lead_id = $2`,
+          [merge_into_id, id],
+        );
+        await tx.unsafe(
+          `UPDATE verification_log SET lead_id = $1 WHERE lead_id = $2`,
+          [merge_into_id, id],
+        );
+        await tx.unsafe(
+          `UPDATE outreach_drafts SET lead_id = $1 WHERE lead_id = $2`,
+          [merge_into_id, id],
+        );
+        await tx.unsafe(
+          `UPDATE outreach_log SET lead_id = $1 WHERE lead_id = $2`,
+          [merge_into_id, id],
+        );
+        await tx.unsafe(
+          `UPDATE enrichment_jobs SET lead_id = $1 WHERE lead_id = $2`,
+          [merge_into_id, id],
+        );
+        await tx.unsafe(
+          `UPDATE inbound_messages SET lead_id = $1 WHERE lead_id = $2`,
+          [merge_into_id, id],
+        );
+        // Clear dangling duplicate pointers at the deleted id so no row
+        // references a lead that no longer exists.
+        await tx.unsafe(
+          `UPDATE leads SET possible_duplicate_of = NULL WHERE possible_duplicate_of = $1`,
+          [id],
+        );
 
-      await sql.unsafe(`DELETE FROM leads WHERE id = $1`, [id]);
+        await tx.unsafe(`DELETE FROM leads WHERE id = $1`, [id]);
+      };
+      if (typeof (sql as any).begin === 'function') {
+        await (sql as any).begin(doMerge);
+      } else {
+        await doMerge(sql);
+      }
 
       await logAuditEvent({
         user_id: (req.user as { id: string }).id,

@@ -50,9 +50,11 @@ async function suppress(
       [normalized],
     );
   } else {
+    // Normalized digit-only comparison: '+91-98...', '9198...' and '98...'
+    // variants must all match the same stored number.
     await sql.unsafe(
       `UPDATE leads SET do_not_contact = true, updated_at = NOW()
-       WHERE hr_contact_id IN (SELECT id FROM hr_contacts WHERE personal_mobile = $1)`,
+       WHERE hr_contact_id IN (SELECT id FROM hr_contacts WHERE regexp_replace(coalesce(personal_mobile,''),'[^0-9]','','g') = regexp_replace($1,'[^0-9]','','g'))`,
       [contact.trim()],
     );
   }
@@ -142,7 +144,7 @@ export const complianceRoutes: FastifyPluginAsync = async (fastify) => {
       }
       if (phone) {
         vals.push(phone.trim());
-        where.push(`personal_mobile = $${vals.length}`);
+        where.push(`regexp_replace(coalesce(personal_mobile,''),'[^0-9]','','g') = regexp_replace($${vals.length},'[^0-9]','','g')`);
       }
       const erased = await sql.unsafe(
         `UPDATE hr_contacts

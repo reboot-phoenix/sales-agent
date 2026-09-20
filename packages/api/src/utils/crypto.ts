@@ -18,7 +18,13 @@ if (!ENCRYPTION_SECRET) {
   );
 }
 
-const ENCRYPTION_KEY = crypto.scryptSync(ENCRYPTION_SECRET, 'salt', 32);
+const ENCRYPTION_SALT = process.env.ENCRYPTION_SALT || 'hiregen-default-salt-v1';
+
+const ENCRYPTION_KEY = crypto.scryptSync(ENCRYPTION_SECRET, ENCRYPTION_SALT, 32);
+// NOTE: rows encrypted under the previous static salt ('salt') cannot be
+// decrypted with a different ENCRYPTION_SALT. Rotating the salt requires a
+// re-encrypt migration (decrypt with old salt, encrypt with new); document
+// only — do not migrate implicitly here.
 
 function encryptText(text: string): string {
   const iv = crypto.randomBytes(12);

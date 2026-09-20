@@ -39,6 +39,11 @@ SITES = [
      "source_site": "freshershunt.in"},
     {"key": "offcampusjobs4u", "sitemap": "https://offcampusjobs4u.com/sitemap_index.xml",
      "source_site": "offcampusjobs4u.com"},
+    # Added 2026-09-20: freshersvoice.com sitemap_index.xml verified LIVE with
+    # posts dated 2026-09-19 (Yoast sitemap). Robots enforced at runtime via
+    # RobotsChecker; this flow touches sitemap + article URLs only, never feeds.
+    {"key": "freshersvoice", "sitemap": "https://freshersvoice.com/sitemap_index.xml",
+     "source_site": "freshersvoice.com"},
     # Evaluated and CUT 2026-09-14: job4freshers.co.in is dormant (newest
     # posts July 2026) and jobbinge.in serves hollow sitemaps (0 post URLs
     # across sampled sitemaps). Dead boards burn fetch budget for zero leads.

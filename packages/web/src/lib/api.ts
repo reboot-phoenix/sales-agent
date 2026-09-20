@@ -13,15 +13,38 @@ const api = axios.create({
 });
 
 let isRefreshing = false;
-let refreshSubscribers: Array<(token: string) => void> = [];
+let refreshSubscribers: Array<{
+  resolve: (value: unknown) => void;
+  reject: (err: unknown) => void;
+  retryRequest: (token: string) => Promise<unknown>;
+}> = [];
 
 const onRefreshed = (token: string) => {
-  refreshSubscribers.forEach((cb) => cb(token));
+  const subs = refreshSubscribers;
   refreshSubscribers = [];
+  subs.forEach(({ resolve, retryRequest }) => {
+    // Retry with the fresh token attached at dispatch time, so a second
+    // rotation between queue and dispatch cannot replay the stale one.
+    void Promise.resolve()
+      .then(() => retryRequest(token))
+      .then(resolve, resolve);
+  });
 };
 
-const addRefreshSubscriber = (cb: (token: string) => void) => {
-  refreshSubscribers.push(cb);
+// Refresh failed (expired cookie, revoked session): every queued request must
+// reject — previously they hung forever because this list had no failure path.
+const onRefreshFailed = (err: unknown) => {
+  const subs = refreshSubscribers;
+  refreshSubscribers = [];
+  subs.forEach(({ reject }) => reject(err));
+};
+
+const addRefreshSubscriber = (sub: {
+  resolve: (value: unknown) => void;
+  reject: (err: unknown) => void;
+  retryRequest: (token: string) => Promise<unknown>;
+}) => {
+  refreshSubscribers.push(sub);
 };
 
 // Auth endpoints must never go through the refresh path. A 401 from /auth/refresh
@@ -42,10 +65,14 @@ api.interceptors.response.use(
       originalRequest._retry = true;
 
       if (isRefreshing) {
-        return new Promise((resolve) => {
-          addRefreshSubscriber((token: string) => {
-            originalRequest.headers.Authorization = `Bearer ${token}`;
-            resolve(api(originalRequest));
+        return new Promise((resolve, reject) => {
+          addRefreshSubscriber({
+            resolve,
+            reject,
+            retryRequest: (token: string) => {
+              originalRequest.headers.Authorization = `Bearer ${token}`;
+              return api(originalRequest);
+            },
           });
         });
       }
@@ -71,6 +98,9 @@ api.interceptors.response.use(
         return api(originalRequest);
       } catch (refreshError) {
         const { useAuthStore } = await import('@/stores/auth');
+        // Queued requests must reject: without this they hung forever on a
+        // failed refresh (expired cookie / revoked session).
+        onRefreshFailed(refreshError);
         // Drop credentials first so nothing in flight can replay the dead token,
         // then hand off to the login route.
         useAuthStore.getState().logout();
@@ -350,7 +380,11 @@ export const admin = {
   },
   armyStatus: async () => {
     const res = await api.get('/army/status');
-    return res.data as { raw: number; enrichment: number; verification: number; draft: number };
+    return res.data as { raw: number; enrichment: number; verification: number; draft: number; scrape?: number; halted?: boolean };
+  },
+  stopArmy: async () => {
+    const res = await api.post('/runs/army/stop', {});
+    return res.data as { stopped: boolean; reason?: string; cleared_queued_jobs?: number; queues?: Record<string, number> };
   },
   getRun: async (id: string) => {
     const res = await api.get(`/runs/${id}`);

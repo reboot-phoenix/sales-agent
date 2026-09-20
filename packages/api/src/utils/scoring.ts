@@ -136,6 +136,38 @@ export function calculateLeadScore(input: LeadScoreInput, weights?: ScoringWeigh
   return { score, breakdown, band };
 }
 
+/**
+ * Product scale 1–10 derived from the canonical 0–100 engine score.
+ * The engine stays 0–100 (weights, thresholds, parity tests); the UI sells 1–10.
+ * Mapping: 0→1 (never show 0), otherwise round(score/10) clamped to 1–10.
+ */
+export function toScore10(score100: number): number {
+  const s = Math.max(0, Math.min(100, Math.round(score100)));
+  if (s <= 0) return 1;
+  return Math.max(1, Math.min(10, Math.round(s / 10)));
+}
+
+export type FreshnessCategory = 'fresh' | 'recent' | 'older' | 'unknown';
+
+/**
+ * Freshness prefers the source's posted_at, falls back to discovery time.
+ * 'unknown' when neither timestamp exists or parses — never pretend exactness.
+ */
+export function freshnessCategory(
+  postedAt?: string | null,
+  discoveredAt?: string | null,
+): FreshnessCategory {
+  const ref = postedAt || discoveredAt;
+  if (!ref) return 'unknown';
+  const t = new Date(ref).getTime();
+  if (Number.isNaN(t)) return 'unknown';
+  const ageMs = Date.now() - t;
+  if (ageMs < 0) return 'fresh'; // future clock skew → fresh, never crash
+  if (ageMs < 24 * 3600 * 1000) return 'fresh';
+  if (ageMs < 7 * 24 * 3600 * 1000) return 'recent';
+  return 'older';
+}
+
 // Read-only score explanation: same inputs as recomputeLeadScore but performs
 // NO write. Returns the deterministic breakdown so the UI can show WHY a lead
 // scored what it did ("verified HR email +25, missing salary -3", …) instead of

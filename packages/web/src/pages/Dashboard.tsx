@@ -2,17 +2,13 @@ import React from 'react';
 import { useQuery, useMutation, useQueryClient } from 'react-query';
 import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
-import {
-  AreaChart, Area, XAxis, YAxis, ResponsiveContainer, Tooltip, CartesianGrid,
-  Cell, PieChart, Pie, BarChart, Bar,
-} from 'recharts';
 import { dashboard, admin, CreditUsageResponse, RunLog } from '@/lib/api';
 import { useSSE, isLeadLifecycleEvent } from '@/hooks/useSSE';
 import { useAuthStore } from '@/stores/auth';
 import {
   Users, Flame, Sun, Snowflake, ShieldAlert, Zap, Activity, BarChart3,
   CheckCircle2, Clock, AlertTriangle, Sparkles, MailCheck, Radar, Radio,
-  Pause, Play,
+  Pause, Play, Square,
 } from 'lucide-react';
 import { PageHeader } from '@/components/ui/page-header';
 import { StatCard, StatCardGrid } from '@/components/ui/stat-card';
@@ -22,6 +18,8 @@ import { Button } from '@/components/ui/button';
 import { PageLoader } from '@/components/ui/spinner';
 import { ErrorState } from '@/components/ui/error-state';
 import { EmptyState } from '@/components/ui/empty-state';
+import { ConfirmDialog } from '@/components/ui/confirm-dialog';
+import { useToast } from '@/components/ui/toast';
 import { formatDateTime } from '@/lib/format';
 
 const STAGE_LABELS: Record<string, string> = {
@@ -34,8 +32,8 @@ const STAGE_LABELS: Record<string, string> = {
   retry_pending: 'Retrying', enrichment_failed: 'Enrich failed', verification_failed: 'Verify failed',
 };
 // Premium paper palette: pine progress, amber attention, red failure,
-// blue delivery, slate neutral. Solids only — gradients are banned.
-const PINE = '#26473E';
+// blue delivery, slate neutral. Solids only for categorical data — soft
+// gradients live only inside area fills (see charts/TrendArea).
 const STAGE_COLORS: Record<string, string> = {
   discovered: '#64748B', enriching: '#8FA3A0', enriched: '#2F7D6B',
   verifying: '#0E9594', verified: '#1F8A4C', ready_for_outreach: '#4D7C0F',
@@ -46,21 +44,11 @@ const STAGE_COLORS: Record<string, string> = {
   retry_pending: '#CA8A04', enrichment_failed: '#DC2626', verification_failed: '#DC2626',
 };
 
-// One glass tooltip reused by every chart.
-function ChartTip(props: any) {
-  const { active, payload, label } = props;
-  if (!active || !payload?.length) return null;
-  return (
-    <div className="glass-strong rounded-lg border border-border px-3 py-2 text-xs shadow-card">
-      {label != null && <p className="mb-1 font-medium capitalize text-muted-foreground">{String(label)}</p>}
-      {payload.map((p: any, i: number) => (
-        <p key={i} className="tabular-nums text-foreground">
-          <span style={{ color: p.color || p.fill }}>{p.name}: </span>{p.value}
-        </p>
-      ))}
-    </div>
-  );
-}
+// One glass tooltip reused by every chart (shared kit).
+import { Donut } from '@/components/charts/Donut';
+import { TrendArea } from '@/components/charts/TrendArea';
+import { HBars } from '@/components/charts/HBars';
+import { PINE, CATEGORICAL, TRACK, resultColor } from '@/components/charts/theme';
 
 type FeedItem = { key: number; type: string; lead_id?: string; at: number };
 
@@ -87,14 +75,44 @@ const Dashboard: React.FC = () => {
   const isAdmin = user?.role === 'admin';
   const queryClient = useQueryClient();
   const navigate = useNavigate();
+  const { toast } = useToast();
   const { data: runsData } = useQuery('dashboard-runs', () => admin.getRuns(8), { refetchInterval: live ? 15000 : false, enabled: isAdmin });
 
   const armyMutation = useMutation(() => admin.runArmy(), {
     onSuccess: (d: any) => {
       queryClient.invalidateQueries('army-status');
       queryClient.invalidateQueries('dashboard-stats');
+      queryClient.invalidateQueries('dashboard-runs');
+      setArmyConfirmOpen(false);
+      toast({ title: 'Army deployed', description: 'Watch the Army Queues and live feed below for real-time progress.', variant: 'success' });
     },
+    onError: (e) => toast({ title: 'Could not start army', description: (e as Error).message, variant: 'error' }),
   });
+  const [armyConfirmOpen, setArmyConfirmOpen] = React.useState(false);
+  const [armyStopConfirmOpen, setArmyStopConfirmOpen] = React.useState(false);
+  const stopMutation = useMutation(() => admin.stopArmy(), {
+    onSuccess: (d: any) => {
+      queryClient.invalidateQueries('army-status');
+      queryClient.invalidateQueries('dashboard-stats');
+      queryClient.invalidateQueries('dashboard-runs');
+      setArmyStopConfirmOpen(false);
+      toast({
+        title: d?.stopped === false ? 'Nothing to stop' : 'Army stopping',
+        description: d?.stopped === false
+          ? (d?.reason || 'No scrape activity is running.')
+          : `In-flight sources cancelling now;${d?.cleared_queued_jobs ? ` ${d.cleared_queued_jobs} queued jobs discarded;` : ''} discovered leads keep flowing through enrich → verify → draft.`,
+        variant: d?.stopped === false ? 'warning' : 'success',
+      });
+    },
+    onError: (e) => toast({ title: 'Could not stop army', description: (e as Error).message, variant: 'error' }),
+  });
+  // Command palette "Run Full Army" routes here for confirmation instead of
+  // firing blind — the palette has no dialog of its own.
+  React.useEffect(() => {
+    const open = () => setArmyConfirmOpen(true);
+    window.addEventListener('hiregen:confirm-army', open);
+    return () => window.removeEventListener('hiregen:confirm-army', open);
+  }, []);
 
   useSSE('/sse/token', (event) => {
     if (!live) return;
@@ -158,8 +176,6 @@ const Dashboard: React.FC = () => {
     name: `${d.channel} · ${d.delivery_status}`,
     value: Number(d.count),
   }));
-  const VERIF_COLORS = ['#1F8A4C', '#B45309', '#DC2626', '#0284C7', '#64748B', '#94A3B8'];
-  const OUTREACH_COLORS = ['#9D174D', '#0284C7', '#1F8A4C', '#DC2626', '#B45309', '#94A3B8'];
 
   return (
     <div className="space-y-phi4">
@@ -185,12 +201,39 @@ const Dashboard: React.FC = () => {
                 {live ? 'Live' : 'Paused'}
               </Button>
               {isAdmin && (
-                <Button size="lg" onClick={() => armyMutation.mutate()} loading={armyMutation.isLoading}>
-                  <Zap className="h-5 w-5" />
-                  {armyMutation.isLoading ? 'Deploying…' : 'Run Full Army'}
-                </Button>
+                armyLive ? (
+                  <Button size="lg" variant="destructive" onClick={() => setArmyStopConfirmOpen(true)} loading={stopMutation.isLoading} disabled={stopMutation.isLoading}>
+                    <Square className="h-5 w-5" />
+                    {stopMutation.isLoading ? 'Stopping…' : `Stop Army · ${queued}`}
+                  </Button>
+                ) : (
+                  <Button size="lg" onClick={() => setArmyConfirmOpen(true)} loading={armyMutation.isLoading} disabled={armyMutation.isLoading}>
+                    <Zap className="h-5 w-5" />
+                    {armyMutation.isLoading ? 'Deploying…' : 'Run Full Army'}
+                  </Button>
+                )
               )}
             </div>
+            <ConfirmDialog
+              open={armyStopConfirmOpen}
+              onClose={() => setArmyStopConfirmOpen(false)}
+              onConfirm={() => stopMutation.mutate()}
+              title="Stop the running army?"
+              description={`In-flight source scrapes cancel within seconds — already-scraped leads are kept, never discarded. Queued scrape jobs are discarded. ${queued} lead${queued === 1 ? '' : 's'} already in enrich → verify → draft keep processing to completion.`}
+              confirmLabel="Stop Army"
+              confirmVariant="destructive"
+              loading={stopMutation.isLoading}
+            />
+            <ConfirmDialog
+              open={armyConfirmOpen}
+              onClose={() => setArmyConfirmOpen(false)}
+              onConfirm={() => armyMutation.mutate()}
+              title="Run Data Collection Army?"
+              description={`Runs all configured sources, then re-enriches leads missing contacts. ${queued} lead${queued === 1 ? '' : 's'} currently in flight. Paid providers consume credits where keys exist. Track the live run in Army Queues below.`}
+              confirmLabel="Run Army"
+              confirmVariant="default"
+              loading={armyMutation.isLoading}
+            />
             <div className={`flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-medium backdrop-blur transition-colors ${armyLive ? 'border-success/40 bg-success-soft text-success' : 'border-border bg-surface/50 text-muted-foreground'}`}>
               <Radio className={`h-3.5 w-3.5 ${armyLive ? 'animate-pulse' : ''}`} />
               {armyLive ? `Army running · ${queued} leads in flight` : 'Idle — ready to deploy'}
@@ -243,68 +286,26 @@ const Dashboard: React.FC = () => {
           {trendData.length === 0 ? (
             <EmptyState icon={BarChart3} title="No discovery data yet" description="New leads per day will chart here once the army runs." />
           ) : (
-            <div className="h-[190px] w-full">
-              <ResponsiveContainer width="100%" height="100%">
-                <AreaChart data={trendData} margin={{ left: -12, right: 12, top: 4 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" vertical={false} />
-                  <XAxis dataKey="day" tick={{ fill: 'hsl(var(--muted-foreground))', fontSize: 11 }} axisLine={false} tickLine={false} interval="preserveStartEnd" />
-                  <YAxis tick={{ fill: 'hsl(var(--muted-foreground))', fontSize: 11 }} axisLine={false} tickLine={false} allowDecimals={false} width={40} domain={[0, 'dataMax']} tickCount={5} />
-                  <Tooltip content={<ChartTip />} cursor={{ stroke: 'hsl(var(--primary))', strokeOpacity: 0.4 }} />
-                  <Area type="monotone" dataKey="discovered" name="Discovered" stroke={PINE} strokeWidth={2.5} fill={PINE} fillOpacity={0.12} animationDuration={800} />
-                </AreaChart>
-              </ResponsiveContainer>
-            </div>
+            <TrendArea data={trendData} xKey="day" yKey="discovered" yName="Discovered" id="discovery" />
           )}
         </CardContent>
       </Card>
 
       {/* ---- live pipeline ---- */}
       <div className="grid grid-cols-1 gap-phi3 xl:grid-cols-3">
-        <Card className="xl:col-span-2">
+        <Card className="flex h-full flex-col xl:col-span-2">
           <CardHeader><CardTitle className="flex items-center gap-2"><Activity className="h-5 w-5 text-primary" />Pipeline Funnel <span className="ml-auto text-xs font-normal text-muted-foreground">Click a bar to open those leads</span></CardTitle></CardHeader>
-          <CardContent className="space-y-5">
+          <CardContent className="flex flex-1 flex-col space-y-2">
             {funnelData.length === 0 ? (
               <EmptyState icon={BarChart3} title="No pipeline data yet" description="Deploy the army to start discovering India fresher leads." />
             ) : (
               <>
-                <div className="h-[180px] w-full cursor-pointer">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <BarChart data={funnelData} layout="vertical" margin={{ left: 8, right: 16 }}>
-                      <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" horizontal={false} />
-                      <XAxis type="number" hide />
-                      <YAxis type="category" dataKey="stage" width={96} tick={{ fill: 'hsl(var(--muted-foreground))', fontSize: 12 }} axisLine={false} tickLine={false} />
-                      <Tooltip content={<ChartTip />} cursor={{ fill: 'hsl(var(--accent) / 0.4)' }} />
-                      <Bar
-                        dataKey="count" name="Leads" radius={[0, 8, 8, 0]}
-                        animationDuration={700}
-                        onClick={(bar: any) => {
-                          const stage = bar?.payload?.full;
-                          if (stage) navigate(`/leads?pipeline_stage=${encodeURIComponent(stage)}`);
-                        }}
-                      >
-                        {funnelData.map((d) => <Cell key={d.full} fill={STAGE_COLORS[d.full] || PINE} />)}
-                      </Bar>
-                    </BarChart>
-                  </ResponsiveContainer>
-                </div>
-                {funnelData.map((d) => {
-                  const pct = (d.count / maxCount) * 100;
-                  return (
-                    <div key={d.stage} className="flex items-center gap-3">
-                      <span className="w-28 shrink-0 text-[13px] font-medium text-foreground">{d.stage}</span>
-                      <div className="h-2 flex-1 overflow-hidden rounded-full bg-muted">
-                        <motion.div
-                          initial={{ width: 0 }}
-                          animate={{ width: `${pct}%` }}
-                          transition={{ duration: 0.8, ease: 'easeOut' }}
-                          className="h-2 rounded-full"
-                          style={{ background: STAGE_COLORS[d.full] }}
-                        />
-                      </div>
-                      <span className="w-14 shrink-0 text-right text-[13px] tabular-nums text-muted-foreground">{d.count}</span>
-                    </div>
-                  );
-                })}
+                <HBars
+                  data={funnelData.map((d) => ({ key: d.full, label: d.stage, value: d.count, color: STAGE_COLORS[d.full] || PINE }))}
+                  grow
+                  onSelect={(row) => navigate(`/leads?pipeline_stage=${encodeURIComponent(row.key)}`)}
+                />
+                <p className="text-[11px] text-muted-foreground">Click a bar to open those leads · max {maxCount.toLocaleString()}</p>
               </>
             )}
           </CardContent>
@@ -314,21 +315,18 @@ const Dashboard: React.FC = () => {
         <div className="flex flex-col gap-phi3">
           <Card>
             <CardHeader><CardTitle className="flex items-center gap-2"><MailCheck className="h-5 w-5 text-success" />Army Processing Rate</CardTitle></CardHeader>
-            <CardContent className="flex items-center gap-5">
-              <div className="relative h-28 w-28 shrink-0">
-                <ResponsiveContainer width="100%" height="100%">
-                  <PieChart>
-                    <Pie data={[{ v: coverage }, { v: 100 - coverage }]} dataKey="v" innerRadius={38} outerRadius={52} startAngle={90} endAngle={-270} stroke="none" cornerRadius={6} animationDuration={800}>
-                      <Cell fill={PINE} />
-                      <Cell fill="hsl(var(--muted))" />
-                    </Pie>
-                  </PieChart>
-                </ResponsiveContainer>
-                <div className="absolute inset-0 flex items-center justify-center">
-                  <span className="text-ink-strong text-2xl font-bold tabular-nums">{coverage}%</span>
-                </div>
-              </div>
-              <div className="text-[13px] text-muted-foreground">
+            <CardContent>
+              <Donut
+                data={[
+                  { name: 'Attempted', value: attemptedCount, color: PINE },
+                  { name: 'Unattempted', value: Math.max(totalLeads - attemptedCount, 0), color: TRACK },
+                ]}
+                centerTop={`${coverage}%`}
+                centerBottom="coverage"
+                size={112}
+                layout="column"
+              />
+              <div className="mt-3 text-[13px] text-muted-foreground">
                 <p className="font-medium text-foreground">{attemptedCount} of {totalLeads} attempted</p>
                 <p>{enrichedCount} with a usable contact · {noContactCount} reached no contact</p>
               </div>
@@ -359,23 +357,12 @@ const Dashboard: React.FC = () => {
         <Card>
           <CardHeader><CardTitle className="flex items-center gap-2"><Flame className="h-5 w-5 text-hot" />Lead Quality</CardTitle></CardHeader>          <CardContent>
             {bandData.length === 0 ? <EmptyState icon={BarChart3} title="No leads scored yet" description="Scores appear once leads are enriched." /> : (
-              <div className="flex items-center gap-4">
-                <div className="h-32 w-32 shrink-0">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <PieChart>
-                      <Pie data={bandData} dataKey="value" nameKey="name" innerRadius={34} outerRadius={58} paddingAngle={3} stroke="none">
-                        {bandData.map((d) => <Cell key={d.name} fill={d.color} />)}
-                      </Pie>
-                      <Tooltip content={<ChartTip />} />
-                    </PieChart>
-                  </ResponsiveContainer>
-                </div>
-                <div className="space-y-2 text-sm">
-                  {bandData.map((d) => (
-                    <div key={d.name} className="flex items-center gap-2"><span className="h-2.5 w-2.5 rounded-full" style={{ background: d.color }} /><span className="text-muted-foreground">{d.name}</span><span className="font-medium tabular-nums">{d.value}</span></div>
-                  ))}
-                </div>
-              </div>
+              <Donut
+                data={bandData}
+                centerTop={totalLeads.toLocaleString()}
+                centerBottom="leads scored"
+                size={128}
+              />
             )}
           </CardContent>
         </Card>
@@ -416,23 +403,12 @@ const Dashboard: React.FC = () => {
             {verifData.length === 0 ? (
               <EmptyState icon={CheckCircle2} title="No verifications yet" description="Email/WhatsApp results will break down here." />
             ) : (
-              <div className="flex items-center gap-4">
-                <div className="h-32 w-32 shrink-0">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <PieChart>
-                      <Pie data={verifData} dataKey="value" nameKey="name" innerRadius={34} outerRadius={58} paddingAngle={3} stroke="none">
-                        {verifData.map((d, i) => <Cell key={d.name} fill={VERIF_COLORS[i % VERIF_COLORS.length]} />)}
-                      </Pie>
-                      <Tooltip content={<ChartTip />} />
-                    </PieChart>
-                  </ResponsiveContainer>
-                </div>
-                <div className="space-y-2 text-sm">
-                  {verifData.map((d, i) => (
-                    <div key={d.name} className="flex items-center gap-2"><span className="h-2.5 w-2.5 rounded-full" style={{ background: VERIF_COLORS[i % VERIF_COLORS.length] }} /><span className="text-muted-foreground capitalize">{d.name}</span><span className="font-medium tabular-nums">{d.value}</span></div>
-                  ))}
-                </div>
-              </div>
+              <Donut
+                data={verifData.map((d, i) => ({ ...d, color: resultColor(d.name, CATEGORICAL[i % CATEGORICAL.length]) }))}
+                centerTop={verifData.reduce((a, d) => a + d.value, 0).toLocaleString()}
+                centerBottom="checks · 7d"
+                size={128}
+              />
             )}
           </CardContent>
         </Card>
@@ -443,23 +419,12 @@ const Dashboard: React.FC = () => {
             {outreachData.length === 0 ? (
               <EmptyState icon={MailCheck} title="No outreach yet" description="Send states will break down here once messages go out." />
             ) : (
-              <div className="flex items-center gap-4">
-                <div className="h-32 w-32 shrink-0">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <PieChart>
-                      <Pie data={outreachData} dataKey="value" nameKey="name" innerRadius={34} outerRadius={58} paddingAngle={3} stroke="none">
-                        {outreachData.map((d, i) => <Cell key={d.name} fill={OUTREACH_COLORS[i % OUTREACH_COLORS.length]} />)}
-                      </Pie>
-                      <Tooltip content={<ChartTip />} />
-                    </PieChart>
-                  </ResponsiveContainer>
-                </div>
-                <div className="space-y-2 text-sm">
-                  {outreachData.map((d, i) => (
-                    <div key={d.name} className="flex items-center gap-2"><span className="h-2.5 w-2.5 rounded-full" style={{ background: OUTREACH_COLORS[i % OUTREACH_COLORS.length] }} /><span className="text-muted-foreground capitalize">{d.name}</span><span className="font-medium tabular-nums">{d.value}</span></div>
-                  ))}
-                </div>
-              </div>
+              <Donut
+                data={outreachData.map((d, i) => ({ ...d, color: resultColor(d.name, CATEGORICAL[i % CATEGORICAL.length]) }))}
+                centerTop={outreachData.reduce((a, d) => a + d.value, 0).toLocaleString()}
+                centerBottom="sends · 7d"
+                size={128}
+              />
             )}
           </CardContent>
         </Card>

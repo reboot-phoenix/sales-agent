@@ -288,16 +288,16 @@
     animation: shimmer 1.6s linear infinite;
   }
 
-  /* premium paper card: hairline border, soft restrained shadow */
+  /* premium paper card: hairline border, soft restrained shadow, wafer-soft radius */
   .card {
-    @apply rounded-xl border bg-surface;
+    @apply rounded-2xl border bg-surface;
     border-color: hsl(var(--border));
     box-shadow: var(--shadow-card);
   }
 
-  /* wafer-style eyebrow: micro caps label with sage dot */
+  /* wafer-style eyebrow: mono micro-caps label with sage dot */
   .eyebrow {
-    @apply inline-flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground;
+    @apply inline-flex items-center gap-2 font-mono text-[11px] font-medium uppercase tracking-[0.22em] text-muted-foreground;
   }
   .eyebrow::before {
     content: '';
@@ -308,7 +308,7 @@
   }
 
   .input {
-    @apply h-10 w-full rounded-lg border border-input bg-surface/60 px-3 py-2 text-sm text-foreground shadow-sm backdrop-blur transition-all duration-150 placeholder:text-muted-foreground/60 focus:border-primary focus:outline-none focus:ring-4 focus:ring-ring disabled:cursor-not-allowed disabled:opacity-50;
+    @apply h-10 w-full rounded-xl border border-input bg-surface/60 px-3 py-2 text-sm text-foreground shadow-sm backdrop-blur transition-all duration-150 placeholder:text-muted-foreground/60 focus:border-primary focus:outline-none focus:ring-4 focus:ring-ring disabled:cursor-not-allowed disabled:opacity-50;
   }
 
   .label {

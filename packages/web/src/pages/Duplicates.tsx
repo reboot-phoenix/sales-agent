@@ -98,6 +98,7 @@ const Duplicates: React.FC = () => {
         loading={mergeMutation.isLoading}
       />
       <PageHeader
+        eyebrow="Insights"
         title="Duplicate Leads"
         description="Review and resolve potential duplicate leads in your pipeline"
       />

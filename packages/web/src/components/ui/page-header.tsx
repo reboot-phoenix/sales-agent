@@ -4,11 +4,13 @@ import { cn } from "@/components/ui/cn";
 export interface PageHeaderProps {
   title: string;
   description?: string;
+  /** Mono micro-caps kicker above the title (wafer-style section eyebrow). */
+  eyebrow?: string;
   actions?: React.ReactNode;
   className?: string;
 }
 
-export function PageHeader({ title, description, actions, className }: PageHeaderProps) {
+export function PageHeader({ title, description, eyebrow, actions, className }: PageHeaderProps) {
   return (
     <div
       className={cn(
@@ -17,7 +19,8 @@ export function PageHeader({ title, description, actions, className }: PageHeade
       )}
     >
       <div className="min-w-0 space-y-phi1">
-        <h1 className="text-2xl font-semibold tracking-tight text-balance">{title}</h1>
+        {eyebrow && <p className="eyebrow">{eyebrow}</p>}
+        <h1 className="text-2xl font-semibold tracking-[-0.02em] text-balance sm:text-[28px]">{title}</h1>
         {description && (
           <p className="max-w-phi-body text-sm leading-relaxed text-muted-foreground text-pretty">{description}</p>
         )}

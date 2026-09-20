@@ -47,6 +47,7 @@ import {
   formatDateTime,
   formatDate,
 } from '@/lib/format';
+import { score10 } from '@/lib/freshness';
 
 type EditingState = {
   draftId: string;
@@ -140,6 +141,11 @@ const LeadDetail: React.FC = () => {
   const [extracting, setExtracting] = useState(false);
   const [extractProvider, setExtractProvider] = useState<'contactout' | 'snovio' | 'osint' | undefined>(undefined);
   const [pendingSend, setPendingSend] = useState<{ channel: string; draftId?: string } | null>(null);
+  // Universal confirmation for consequential actions (claim/verify/draft/assign/suppress).
+  const [confirmStep, setConfirmStep] = useState<{
+    title: string; description: string; confirmLabel: string;
+    variant?: 'destructive' | 'default'; run: () => void;
+  } | null>(null);
   const [sending, setSending] = useState(false);
 
   const editDraftMutation = useMutation(
@@ -272,8 +278,18 @@ const LeadDetail: React.FC = () => {
   };
 
   const handleEnrich = () => {
-    setExtracting(true);
-    enrichMutation.mutate({ leadId: lead.id, provider: extractProvider });
+    const providerLabel = extractProvider === 'contactout' ? 'ContactOut'
+      : extractProvider === 'snovio' ? 'Snov.io'
+      : extractProvider === 'osint' ? 'OSINT (free)' : 'Auto (OSINT → Snov → ContactOut → Apollo)';
+    setConfirmStep({
+      title: `Enrich with ${providerLabel}?`,
+      description: `${lead.company_name || 'This lead'}${lead.job_title ? ` · ${lead.job_title}` : ''}. Free OSINT runs first; paid providers consume credits per lookup where keys exist. Safe to re-run; verified contacts are never overwritten.`,
+      confirmLabel: 'Enrich',
+      run: () => {
+        setExtracting(true);
+        enrichMutation.mutate({ leadId: lead.id, provider: extractProvider });
+      },
+    });
   };
 
   const runAction = (fn: Promise<unknown>, successMsg: string) => {
@@ -285,7 +301,14 @@ const LeadDetail: React.FC = () => {
   };
 
   const handleDoNotContactChange = (value: boolean) => {
-    doNotContactMutation.mutate({ leadId: lead.id, value });
+    setConfirmStep({
+      title: value ? 'Mark do-not-contact?' : 'Allow contact again?',
+      description: value
+        ? `${lead.company_name || 'This lead'} will be excluded from all outreach until re-allowed. Reversible.`
+        : `${lead.company_name || 'This lead'} re-enters outreach eligibility.`,
+      confirmLabel: value ? 'Suppress lead' : 'Allow contact',
+      run: () => doNotContactMutation.mutate({ leadId: lead.id, value }),
+    });
   };
 
   const confirmSend = () => {
@@ -307,7 +330,14 @@ const LeadDetail: React.FC = () => {
     : null;
 
   const handleAssign = (userId: string) => {
-    assignMutation.mutate({ leadId: lead.id, userId: userId || null });
+    const target = userId ? users.find((u: any) => u.id === userId) : null;
+    setShowAssignModal(false);
+    setConfirmStep({
+      title: target ? `Assign lead to ${target.email}?` : 'Unassign this lead?',
+      description: `${lead.company_name || 'This lead'}${lead.job_title ? ` · ${lead.job_title}` : ''} moves ${target ? `to ${target.email}` : 'back to the unassigned pool'} immediately. Reversible by reassigning.`,
+      confirmLabel: target ? 'Assign lead' : 'Unassign',
+      run: () => assignMutation.mutate({ leadId: lead.id, userId: userId || null }),
+    });
   };
 
   const assignedUser = users.find((u: any) => u.id === lead.assigned_to);
@@ -359,8 +389,8 @@ const ENUM_LIKE_KEYS = new Set([
             <div className="flex flex-wrap items-start justify-between gap-4">
               <div className="min-w-0">
                 <div className="mb-2 flex flex-wrap items-center gap-2">
-                  <Badge className={bandMeta.className}>
-                    Score {lead.lead_score} · {bandMeta.label}
+                  <Badge className={bandMeta.className} title={`Engine score ${lead.lead_score}/100`}>
+                    Score {score10(lead.lead_score)}/10 · {bandMeta.label}
                   </Badge>
                   <Badge className={stageMetaV.className}>
                     <span className="capitalize">{stageMetaV.label}</span>
@@ -393,13 +423,13 @@ const ENUM_LIKE_KEYS = new Set([
                   </span>
                 ) : null}
                 {!(lead as any).claimed_by && !lead.assigned_to && (
-                  <Button onClick={() => claimMutation.mutate()} loading={claimMutation.isLoading} variant="outline">
+                  <Button onClick={() => setConfirmStep({ title: 'Claim this lead?', description: `${lead.company_name || 'This lead'}${lead.job_title ? ` · ${lead.job_title}` : ''} becomes yours instantly and leaves the shared claim pool. Another admin can reassign it later.`, confirmLabel: 'Claim lead', run: () => claimMutation.mutate() })} loading={claimMutation.isLoading} variant="outline">
                     <UserPlus className="h-4 w-4" />
                     Claim Lead
                   </Button>
                 )}
                 <Button
-                  onClick={() => runAction(leadsApi.verify(lead.id), 'Verification completed')}
+                  onClick={() => setConfirmStep({ title: 'Verify contact?', description: `${lead.company_name || 'This lead'}: checks email deliverability and WhatsApp registration. Results are recorded in the verification log.`, confirmLabel: 'Verify', run: () => runAction(leadsApi.verify(lead.id), 'Verification completed') })}
                   disabled={lead.pipeline_stage === 'verified' || lead.pipeline_stage === 'discovered'}
                   variant="outline"
                 >
@@ -407,7 +437,7 @@ const ENUM_LIKE_KEYS = new Set([
                   Verify
                 </Button>
                 <Button
-                  onClick={() => runAction(leadsApi.draft(lead.id, 'both'), 'Draft generated')}
+                  onClick={() => setConfirmStep({ title: 'Generate outreach draft?', description: `${lead.company_name || 'This lead'}: drafted with Gemini from verified context only — nothing is sent until you approve.`, confirmLabel: 'Generate draft', run: () => runAction(leadsApi.draft(lead.id, 'both'), 'Draft generated') })}
                   disabled={lead.pipeline_stage === 'drafted'}
                   variant="outline"
                 >
@@ -519,7 +549,7 @@ const ENUM_LIKE_KEYS = new Set([
           <CardContent>
             <dl className="divide-y divide-border text-[13px]">
               {[
-                ['Score', `${lead.lead_score} (${lead.score_band})`],
+                ['Score', `${score10(lead.lead_score)}/10 (${lead.score_band})`],
                 ['Stage', lead.pipeline_stage],
                 ['Data quality', dqMeta?.label || '—'],
                 ['Email', lead.hr_email || '—'],
@@ -630,7 +660,7 @@ const ENUM_LIKE_KEYS = new Set([
             <CardHeader>
               <CardTitle className="flex items-center justify-between">
                 <span className="flex items-center gap-2"><Sparkles className="h-4 w-4 text-primary" />Why this score</span>
-                <span className="text-ink-strong text-lg font-semibold tabular-nums">{scoreData.score}</span>
+                <span className="text-ink-strong text-lg font-semibold tabular-nums" title={`Engine score ${scoreData.score}/100`}>{(scoreData as any).score_10 ?? score10(scoreData.score)}/10</span>
               </CardTitle>
             </CardHeader>
             <CardContent>
@@ -851,6 +881,18 @@ const ENUM_LIKE_KEYS = new Set([
         confirmLabel={sendBlockReason ? 'Blocked' : 'Confirm send'}
         loading={sending}
       />
+
+      {confirmStep && (
+        <ConfirmDialog
+          open
+          onClose={() => setConfirmStep(null)}
+          onConfirm={() => { const fn = confirmStep.run; setConfirmStep(null); fn(); }}
+          title={confirmStep.title}
+          description={confirmStep.description}
+          confirmLabel={confirmStep.confirmLabel}
+          confirmVariant={confirmStep.variant || 'default'}
+        />
+      )}
 
       <Modal open={showAssignModal} onClose={() => setShowAssignModal(false)} title="Assign Lead">
         <div className="space-y-2">

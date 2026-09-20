@@ -141,8 +141,9 @@ export const webhookRoutes: FastifyPluginAsync = async (fastify) => {
       );
 
       await sql.unsafe(
-        `UPDATE leads SET pipeline_stage = 'contacted'
-         WHERE id = (SELECT lead_id FROM outreach_log WHERE provider_message_id = $1 LIMIT 1)`,
+        `UPDATE leads SET pipeline_stage = 'contacted', updated_at = NOW()
+         WHERE id = (SELECT lead_id FROM outreach_log WHERE provider_message_id = $1 LIMIT 1)
+           AND pipeline_stage NOT IN ('replied','converted','suppressed','bounced')`,
         [messageId],
       );
       await notifyOwners(await leadIdsForMessage(messageId));
@@ -242,8 +243,9 @@ export const webhookRoutes: FastifyPluginAsync = async (fastify) => {
       );
 
       await sql.unsafe(
-        `UPDATE leads SET pipeline_stage = 'replied'
-         WHERE id = (SELECT lead_id FROM outreach_log WHERE provider_message_id = $1 LIMIT 1)`,
+        `UPDATE leads SET pipeline_stage = 'replied', updated_at = NOW()
+         WHERE id = (SELECT lead_id FROM outreach_log WHERE provider_message_id = $1 LIMIT 1)
+           AND pipeline_stage NOT IN ('converted','suppressed')`,
         [messageId],
       );
 
@@ -266,15 +268,29 @@ export const webhookRoutes: FastifyPluginAsync = async (fastify) => {
             /\bunsubscribe\b|\bopt[ -]?out\b|\bdo ?n[o']?t contact\b|\bstop contacting\b|\bremove me\b|\bnot interested\b|\bdelist\w*\b/.test(
               lower,
             );
-          await sql.unsafe(
-            `INSERT INTO inbound_messages
-               (lead_id, outreach_log_id, channel, sender_identity, subject,
-                body_text, provider_message_id, is_unsubscribe, raw_payload)
-             SELECT $1, o.id, 'email', $2, $3, $4, $1, $5, $6::jsonb
-             FROM outreach_log o WHERE o.provider_message_id = $1 LIMIT 1`,
-            [messageId, from || null, subject || null, body, wantsOut,
-             JSON.stringify({ event_type: type })],
+          // Dedup: provider retries must not store the same message twice.
+          // Pre-checked AND backed by UNIQUE uq_inbound_provider_msg (011);
+          // the catch keeps a lost SELECT-vs-INSERT race from 500ing the
+          // webhook (provider would retry forever).
+          const seen = await sql.unsafe(
+            `SELECT 1 FROM inbound_messages WHERE provider_message_id = $1 LIMIT 1`,
+            [messageId],
           );
+          if (!seen || seen.length === 0) {
+            try {
+              await sql.unsafe(
+                `INSERT INTO inbound_messages
+                   (lead_id, outreach_log_id, channel, sender_identity, subject,
+                    body_text, provider_message_id, is_unsubscribe, raw_payload)
+                 SELECT $1, o.id, 'email', $2, $3, $4, $1, $5, $6::jsonb
+                 FROM outreach_log o WHERE o.provider_message_id = $1 LIMIT 1`,
+                [messageId, from || null, subject || null, body, wantsOut,
+                 JSON.stringify({ event_type: type })],
+              );
+            } catch (err: any) {
+              if (err?.code !== '23505' && !/duplicate key/i.test(String(err?.message || ''))) throw err;
+            }
+          }
           if (wantsOut) {
             // Honour it immediately rather than waiting for a human to read it.
             await sql.unsafe(
@@ -300,6 +316,22 @@ export const webhookRoutes: FastifyPluginAsync = async (fastify) => {
     }
 
     return { status: 'ok' };
+  });
+
+  // Meta webhook verification handshake (GET): Meta calls this with
+  // hub.mode=subscribe, hub.verify_token, hub.challenge during setup.
+  // Returns the challenge as plain text when the token matches
+  // WHATSAPP_VERIFY_TOKEN; otherwise 403. Does not affect POST /whatsapp.
+  fastify.get('/whatsapp', async (req, reply) => {
+    const q = req.query as Record<string, string | undefined>;
+    const mode = q['hub.mode'];
+    const token = q['hub.verify_token'];
+    const challenge = q['hub.challenge'];
+    const expected = process.env.WHATSAPP_VERIFY_TOKEN;
+    if (mode === 'subscribe' && challenge && expected && token === expected) {
+      return reply.status(200).type('text/plain').send(challenge);
+    }
+    return reply.status(403).send({ error: 'Forbidden' });
   });
 
   fastify.post('/whatsapp', async (req, reply) => {
@@ -331,7 +363,8 @@ export const webhookRoutes: FastifyPluginAsync = async (fastify) => {
                   `SELECT l.id FROM leads l
                    LEFT JOIN hr_contacts hc ON l.hr_contact_id = hc.id
                    LEFT JOIN companies c ON l.company_id = c.id
-                   WHERE hc.personal_mobile = $1 OR c.default_phone = $1
+                   WHERE regexp_replace(coalesce(hc.personal_mobile,''),'[^0-9]','','g') = regexp_replace($1,'[^0-9]','','g')
+                      OR regexp_replace(coalesce(c.default_phone,''),'[^0-9]','','g') = regexp_replace($1,'[^0-9]','','g')
                    LIMIT 1`,
                   [from],
                 );
@@ -351,9 +384,10 @@ export const webhookRoutes: FastifyPluginAsync = async (fastify) => {
                       [(leadResult as any[])[0].id],
                     );
                   } else {
+                    // Only move FORWARD: never overwrite replied/converted/suppressed/bounced.
                     await sql.unsafe(
                       `UPDATE leads SET pipeline_stage = 'replied', updated_at = NOW()
-                       WHERE id = $1`,
+                       WHERE id = $1 AND pipeline_stage NOT IN ('converted','suppressed')`,
                       [(leadResult as any[])[0].id],
                     );
                   }

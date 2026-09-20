@@ -44,6 +44,8 @@ FAILOVER: dict[str, list[str]] = {
     "elitmus": ["freshersworld", "unstop", "offcampus"],
     "freejobalert": ["offcampus", "freshersworld"],
     "hasjob": ["cutshort", "instahyre", "unstop"],
+    "hackernews": ["wellfound", "github_jobs", "duckduckgo"],
+    "ripplehire": ["offcampus", "freshersworld", "internshala"],
     "amazon": ["indeed", "jooble"],
     # ATS boards compensate within the ATS family (same employer-direct class)
     "greenhouse": ["lever", "ashby"],

@@ -302,6 +302,7 @@ const Settings: React.FC = () => {
   return (
     <div className="space-y-phi4">
       <PageHeader
+        eyebrow="System"
         title="Settings"
         description="Configure scrapers, API keys, scoring, and scheduling"
         actions={

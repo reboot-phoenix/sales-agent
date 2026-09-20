@@ -46,6 +46,11 @@ const envSchema = z.object({
   EMAIL_FROM: z.string().optional(),
   RESEND_WEBHOOK_SECRET: z.string().optional(),
   WHATSAPP_APP_SECRET: z.string().optional(),
+  WHATSAPP_VERIFY_TOKEN: z.string().optional(),
+  ENCRYPTION_SALT: z.string().optional(),
+  // Mirrors server.ts `process.env.TRUST_PROXY === 'true'`: set TRUST_PROXY=true
+  // only when running behind a trusted reverse proxy (docker-compose web/nginx).
+  TRUST_PROXY: z.string().optional(),
   WHATSAPP_WEB_URL: z.string().optional(),
   ADZUNA_APP_ID: z.string().optional(),
   ADZUNA_APP_KEY: z.string().optional(),

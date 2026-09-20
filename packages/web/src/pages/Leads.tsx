@@ -12,7 +12,7 @@ import { Lead } from '@/lib/types';
 import {
   Search, RefreshCw, ChevronUp, ChevronDown, ChevronRight, Play, Sparkles, MapPin,
   BadgeCheck, FileText, MessageCircle, Mail, Eye, Users, UserPlus, UserCheck, XCircle,
-  Columns3, LayoutGrid, Download, Zap, Loader2, CheckCircle2, ExternalLink, Phone, Copy, Check, Radar, Send,
+  Columns3, LayoutGrid, Download, Zap, Loader2, CheckCircle2, ExternalLink, Phone, Copy, Check, Radar, Send, Square,
 } from 'lucide-react';
 import { useSSE, isLeadLifecycleEvent } from '@/hooks/useSSE';
 import { useAuthStore } from '@/stores/auth';
@@ -28,6 +28,8 @@ import { EmptyState } from '@/components/ui/empty-state';
 import { ErrorState } from '@/components/ui/error-state';
 import { Pagination } from '@/components/ui/pagination';
 import { SCORE_BAND_META, stageMeta, emailStatusMeta, whatsappStatusMeta, formatDate } from '@/lib/format';
+import { FRESHNESS_META, freshnessCategory, freshnessLabel, score10 } from '@/lib/freshness';
+import { ConfirmDialog } from '@/components/ui/confirm-dialog';
 import { LEAD_COLUMNS, leadsToCsv } from '@/lib/leadColumns';
 import { ImportLeadsModal } from '@/components/ImportLeadsModal';
 import { Upload } from 'lucide-react';
@@ -166,12 +168,27 @@ const Leads: React.FC = () => {
   // The active filters, in one place so the table query and the export can never
   // drift -- an export that ignored the current filter would silently hand back a
   // different set of leads than the user is looking at.
+  // Full-field filters (server-side; every filter narrows the DB query, never
+  // just the visible page — client-side filtering on 25 rows lies with pagination).
+  const [sourceFilter, setSourceFilter] = useState('');
+  const [cityFilter, setCityFilter] = useState('');
+  const [deptFilter, setDeptFilter] = useState('');
+  const [contactFilter, setContactFilter] = useState<'' | 'none' | 'partial' | 'enriched' | 'verified'>('');
+  const [dateFilter, setDateFilter] = useState<'' | '24h' | '7d' | '30d'>('');
+  const [freshnessFilter, setFreshnessFilter] = useState<'' | 'fresh' | 'recent' | 'older' | 'unknown'>('');
+  const dateFrom = dateFilter === '24h' ? new Date(Date.now() - 24 * 3600 * 1000).toISOString()
+    : dateFilter === '7d' ? new Date(Date.now() - 7 * 24 * 3600 * 1000).toISOString()
+    : dateFilter === '30d' ? new Date(Date.now() - 30 * 24 * 3600 * 1000).toISOString()
+    : undefined;
   const exportParams = {
     sort_by: sortParam as any, sort_order: sortOrder as any,
-    score_band: scoreBand, pipeline_stage: pipelineStage, source_site: sourceSite,
+    score_band: scoreBand, pipeline_stage: pipelineStage, source_site: sourceSite || sourceFilter || undefined,
     ownership: ownershipFilter || undefined,
     filter: globalFilter || undefined, experience: experienceFilter || undefined,
     location_type: workplaceFilter || undefined,
+    city: cityFilter || undefined, department: deptFilter || undefined,
+    contact: contactFilter || undefined, freshness: freshnessFilter || undefined,
+    date_from: dateFrom,
     // "₹5L+" means a numeric floor (salary_min), not the has_salary flag -- the old
     // code sent the rupee amount AS has_salary, so every pay band behaved like "disclosed".
     salary_min: salaryFilter && salaryFilter !== 'any' ? Number(salaryFilter) * 100000 : undefined,
@@ -179,13 +196,16 @@ const Leads: React.FC = () => {
   };
 
   const { data, isLoading, refetch, isFetching, isError, error } = useQuery(
-    ['leads', page, pagination.pageSize, sortParam, sortOrder, scoreBand, pipelineStage, sourceSite, ownershipFilter, globalFilter, experienceFilter, workplaceFilter, salaryFilter],
+    ['leads', page, pagination.pageSize, sortParam, sortOrder, scoreBand, pipelineStage, sourceSite, ownershipFilter, globalFilter, experienceFilter, workplaceFilter, salaryFilter, sourceFilter, cityFilter, deptFilter, contactFilter, dateFrom, freshnessFilter],
     () => leadsApi.list({
       page, limit: pagination.pageSize, sort_by: sortParam as any, sort_order: sortOrder as any,
-      score_band: scoreBand, pipeline_stage: pipelineStage, source_site: sourceSite,
+      score_band: scoreBand, pipeline_stage: pipelineStage, source_site: sourceSite || sourceFilter || undefined,
       ownership: ownershipFilter || undefined,
       filter: globalFilter || undefined, experience: experienceFilter || undefined,
       location_type: workplaceFilter || undefined,
+      city: cityFilter || undefined, department: deptFilter || undefined,
+      contact: contactFilter || undefined, freshness: freshnessFilter || undefined,
+      date_from: dateFrom,
       salary_min: salaryFilter && salaryFilter !== 'any' ? Number(salaryFilter) * 100000 : undefined,
       has_salary: salaryFilter === 'any' ? true : undefined,
     }),
@@ -200,8 +220,30 @@ const Leads: React.FC = () => {
 
   const { data: armyStatus } = useQuery('army-status', () => admin.armyStatus(), { refetchInterval: 5000, refetchOnWindowFocus: false });
   const queued = armyStatus ? (armyStatus.raw || 0) + (armyStatus.enrichment || 0) + (armyStatus.verification || 0) + (armyStatus.draft || 0) : 0;
+  const [armyConfirmOpen, setArmyConfirmOpen] = useState(false);
+  const [armyStopConfirmOpen, setArmyStopConfirmOpen] = useState(false);
+  const stopMutation = useMutation(() => admin.stopArmy(), {
+    onSuccess: (d: any) => {
+      queryClient.invalidateQueries('army-status');
+      setArmyStopConfirmOpen(false);
+      toast({
+        title: d?.stopped === false ? 'Nothing to stop' : 'Army stopping',
+        description: d?.stopped === false
+          ? (d?.reason || 'No scrape activity is running.')
+          : `In-flight sources cancelling now;${d?.cleared_queued_jobs ? ` ${d.cleared_queued_jobs} queued jobs discarded;` : ''} discovered leads keep flowing through the pipeline.`,
+        variant: d?.stopped === false ? 'warning' : 'success',
+      });
+    },
+    onError: (e) => toast({ title: 'Could not stop army', description: (e as Error).message, variant: 'error' }),
+  });
+  // Command palette hands off here so every army trigger is confirmed.
+  React.useEffect(() => {
+    const open = () => setArmyConfirmOpen(true);
+    window.addEventListener('hiregen:confirm-army', open);
+    return () => window.removeEventListener('hiregen:confirm-army', open);
+  }, []);
   const armyMutation = useMutation(() => admin.runArmy(), {
-    onSuccess: (d: any) => { toast({ title: 'Army deployed', description: d?.sweep_reenqueued ? `Scraping all sources + re-enriching ${d.sweep_reenqueued} leads.` : 'Scraping all sources.', variant: 'success' }); queryClient.invalidateQueries(['army-status']); },
+    onSuccess: (d: any) => { toast({ title: 'Army deployed', description: d?.sweep_reenqueued ? `Scraping all sources + re-enriching ${d.sweep_reenqueued} leads.` : 'Scraping all sources.', variant: 'success' }); queryClient.invalidateQueries(['army-status']); setArmyConfirmOpen(false); },
     onError: (e) => toast({ title: 'Could not start army', description: (e as Error).message, variant: 'error' }),
   });
 
@@ -213,11 +255,34 @@ const Leads: React.FC = () => {
   // instead of looking dead for the few hundred ms until the list refetches.
   const [busy, setBusy] = useState<Record<string, string>>({});
   const act = (leadId: string, kind: string, fn: Promise<unknown>, msg: string) => {
-    setBusy((b) => ({ ...b, [leadId]: kind }));
+    // Double-fire guard: a second click while the first is in flight is ignored.
+    let ignored = false;
+    setBusy((b) => {
+      if (b[leadId]) { ignored = true; return b; }
+      return { ...b, [leadId]: kind };
+    });
+    if (ignored) { try { (fn as Promise<unknown>).catch(() => {}); } catch { /* noop */ } return Promise.resolve(); }
     return runAction(fn, msg).finally(() => {
       setBusy((b) => { const n = { ...b }; delete n[leadId]; return n; });
     });
   };
+
+  // Universal confirmation: every consequential action stages here first and
+  // fires only on explicit confirm. The promise factory runs AFTER confirm so
+  // nothing starts in the background while the dialog is open.
+  const [actionConfirm, setActionConfirm] = useState<{
+    title: string; description: string; confirmLabel: string;
+    variant?: 'destructive' | 'default'; run: () => void;
+  } | null>(null);
+  const confirmAct = (
+    leadId: string, kind: string, make: () => Promise<unknown>, msg: string,
+    title: string, description: string, confirmLabel: string,
+    variant?: 'destructive' | 'default',
+  ) => setActionConfirm({
+    title, description, confirmLabel, variant,
+    run: () => { setActionConfirm(null); act(leadId, kind, make(), msg); },
+  });
+  const who = (lead: any) => `${lead.company_name || 'this lead'}${lead.job_title ? ` · ${lead.job_title}` : ''}`;
 
   const bulkEnrichMutation = useMutation(
     ({ ids, provider }: { ids: string[]; provider: string }) => Promise.all(ids.map((id) => leadsApi.enrich(id, provider))),
@@ -229,6 +294,8 @@ const Leads: React.FC = () => {
   );
 
   const leadData: any = data ?? { data: [], pagination: { page: 1, limit: 25, total: 0, pages: 0 } };
+  // Freshness is server-side (freshnessFilter rides the query above): rows arrive
+  // already narrowed, so no client-side pass that would lie under pagination.
   const leadRows: Lead[] = leadData.data || [];
 
   const toggleSelectAll = () => {
@@ -295,8 +362,10 @@ const Leads: React.FC = () => {
       </button>
     ) }),
     columnHelper.accessor('lead_score', { header: 'Score', cell: (info) => {
+      const row = info.row.original as any;
       const band = info.row.original.score_band as 'hot' | 'warm' | 'cold'; const meta = SCORE_BAND_META[band];
-      return <div className="flex items-center gap-2"><span className="inline-flex h-8 w-8 items-center justify-center rounded-full border bg-muted text-[13px] font-bold tabular-nums text-ink-strong">{info.getValue()}</span>{meta && <span className={`h-1.5 w-1.5 rounded-full ${meta.dot}`} />}</div>;
+      const ten = row.score_10 ?? score10(info.getValue() as number);
+      return <div className="flex items-center gap-2" title={`${info.getValue()}/100 · band ${band || '—'}`}><span className="inline-flex h-8 w-8 items-center justify-center rounded-full border bg-muted text-[13px] font-bold tabular-nums text-ink-strong">{ten}<span className="text-[10px] font-medium text-muted-foreground">/10</span></span>{meta && <span className={`h-1.5 w-1.5 rounded-full ${meta.dot}`} />}</div>;
     } }),
     columnHelper.accessor('company_name', { header: 'Company', cell: (info) => (
       <div className="min-w-0"><p className="truncate font-medium text-foreground">{info.getValue() || '—'}</p>{info.row.original.company_domain && <p className="truncate text-xs text-muted-foreground">{info.row.original.company_domain}</p>}</div>
@@ -382,7 +451,20 @@ const Leads: React.FC = () => {
     // Hostnames must keep their own casing: CSS capitalize turned timesjobs.com into
     // "Timesjobs.Com", which reads as a different brand than the one on the posting.
     columnHelper.accessor('source_site', { header: 'Source', cell: (info) => <span className="text-[13px] text-muted-foreground">{info.getValue() || '—'}</span> }),
-    columnHelper.accessor('posted_at', { header: 'Posted', cell: (info) => <span className="whitespace-nowrap text-[13px] text-muted-foreground">{info.getValue() ? formatDate(info.getValue()) : '—'}</span> }),
+    columnHelper.accessor('posted_at', { header: 'Posted', cell: (info) => {
+      const l = info.row.original as any;
+      const cat = (l.freshness_category as keyof typeof FRESHNESS_META) || freshnessCategory(l.posted_at, l.created_at);
+      const meta = FRESHNESS_META[cat] || FRESHNESS_META.unknown;
+      return (
+        <div className="flex flex-col gap-1">
+          <span className="whitespace-nowrap text-[13px] text-muted-foreground">{info.getValue() ? formatDate(info.getValue()) : '—'}</span>
+          <span className="flex w-fit items-center gap-1.5">
+            <span className={`inline-flex items-center rounded border px-1 py-px font-mono text-[10px] font-bold tracking-wide ${meta.className}`} title={`Freshness: ${meta.label}${l.posted_at ? '' : ' (posting date unavailable)'}`}>{meta.tag}</span>
+            <span className="text-[11px] tabular-nums text-muted-foreground">{cat === 'unknown' ? 'Unknown' : freshnessLabel(l.posted_at, l.created_at, cat)}</span>
+          </span>
+        </div>
+      );
+    } }),
     columnHelper.display({ id: 'posting_link', header: 'Apply Link', cell: ({ row }) => {
       const l = row.original;
       const url = l.apply_url || l.job_url;
@@ -418,7 +500,10 @@ const Leads: React.FC = () => {
               title="Claim this lead — it becomes yours instantly"
               aria-label={`Claim ${lead.company_name || 'lead'}`}
               disabled={!!pending}
-              onClick={() => act(lead.id, 'claim', leadsApi.claim(lead.id), 'Lead claimed')}
+              onClick={() => confirmAct(lead.id, 'claim', () => leadsApi.claim(lead.id), 'Lead claimed',
+                'Claim this lead?',
+                `${who(lead)}. It becomes yours instantly and leaves the shared claim pool. Another admin can reassign it later.`,
+                'Claim lead')}
               className="inline-flex shrink-0 items-center gap-1.5 rounded-full bg-primary px-3.5 py-[7px] text-[12px] font-semibold text-primary-foreground shadow-sm transition-all hover:bg-primary-hover hover:shadow-md hover:-translate-y-px active:translate-y-0 disabled:opacity-60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             >
               {pending === 'claim' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <UserPlus className="h-3.5 w-3.5" />}
@@ -455,14 +540,37 @@ const Leads: React.FC = () => {
           } items={[
             { label: 'Open full record', icon: <Eye />, onSelect: () => navigate(`/leads/${lead.id}`) },
             // ONE primary Enrich: the engine picks OSINT → Snov → ContactOut → Apollo.
-            { label: 'Enrich', section: 'Enrich', hint: 'auto', icon: <Radar />, disabled: done, onSelect: () => act(lead.id, 'enrich', leadsApi.enrich(lead.id, 'auto'), 'Enrichment started') },
-            ...ENRICH_PROVIDERS.filter((p) => p.key !== 'auto').map((pc) => ({ label: `Enrich · ${pc.label}`, section: 'Enrich', hint: pc.hint, icon: <Sparkles />, disabled: done, onSelect: () => act(lead.id, 'enrich', leadsApi.enrich(lead.id, pc.key), `${pc.label} enrichment started`) })),
-            { label: 'Verify contact', section: 'Outreach', icon: <BadgeCheck />, disabled: done, onSelect: () => act(lead.id, 'verify', leadsApi.verify(lead.id), 'Verification started') },
-            { label: 'Draft outreach', section: 'Outreach', icon: <FileText />, disabled: done, onSelect: () => act(lead.id, 'draft', leadsApi.draft(lead.id, 'both'), 'Draft started') },
-            { label: 'Verify & send', section: 'Outreach', icon: <Send />, hint: !emailOk && !waOk ? 'verify first' : undefined, disabled: done || (!emailOk && !waOk), onSelect: () => act(lead.id, 'send', leadsApi.verifyAndSend(lead.id, 'both'), 'Verify & send queued') },
-            { label: 'Send message', section: 'Outreach', icon: <Mail />, hint: !emailOk && !waOk ? 'verify first' : undefined, disabled: done || (!emailOk && !waOk), onSelect: () => act(lead.id, 'send', leadsApi.send(lead.id, 'both'), 'Send queued') },
+            { label: 'Enrich', section: 'Enrich', hint: 'auto', icon: <Radar />, disabled: done, onSelect: () => confirmAct(lead.id, 'enrich', () => leadsApi.enrich(lead.id, 'auto'), 'Enrichment started',
+              'Enrich this lead?',
+              `${who(lead)}. Runs the free OSINT cascade first, then paid providers (Snov.io, ContactOut, Apollo) where keys exist — paid lookups may consume credits. Safe to re-run; verified contacts are never overwritten.`,
+              'Enrich') },
+            ...ENRICH_PROVIDERS.filter((p) => p.key !== 'auto').map((pc) => ({ label: `Enrich · ${pc.label}`, section: 'Enrich', hint: pc.hint, icon: <Sparkles />, disabled: done, onSelect: () => confirmAct(lead.id, 'enrich', () => leadsApi.enrich(lead.id, pc.key), `${pc.label} enrichment started`,
+              `Enrich with ${pc.label}?`,
+              `${who(lead)}. Forces the ${pc.label} provider directly (${pc.hint}). Consumes provider credits per lookup.`,
+              `Enrich via ${pc.label}`) })),
+            { label: 'Verify contact', section: 'Outreach', icon: <BadgeCheck />, disabled: done, onSelect: () => confirmAct(lead.id, 'verify', () => leadsApi.verify(lead.id), 'Verification started',
+              'Verify contact?',
+              `${who(lead)}. Checks email deliverability and WhatsApp registration. Results are recorded in the verification log.`,
+              'Verify') },
+            { label: 'Draft outreach', section: 'Outreach', icon: <FileText />, disabled: done, onSelect: () => confirmAct(lead.id, 'draft', () => leadsApi.draft(lead.id, 'both'), 'Draft started',
+              'Generate outreach draft?',
+              `${who(lead)}. Drafts with Gemini from verified lead context only — nothing is invented, and nothing is sent until you approve.`,
+              'Generate draft') },
+            { label: 'Verify & send', section: 'Outreach', icon: <Send />, hint: !emailOk && !waOk ? 'verify first' : undefined, disabled: done || (!emailOk && !waOk), onSelect: () => confirmAct(lead.id, 'send', () => leadsApi.verifyAndSend(lead.id, 'both'), 'Verify & send queued',
+              'Verify and send now?',
+              `${who(lead)}. Verifies first, then SENDS a real message to the HR contact. Sent messages cannot be unsent.`,
+              'Verify & send', 'destructive') },
+            { label: 'Send message', section: 'Outreach', icon: <Mail />, hint: !emailOk && !waOk ? 'verify first' : undefined, disabled: done || (!emailOk && !waOk), onSelect: () => confirmAct(lead.id, 'send', () => leadsApi.send(lead.id, 'both'), 'Send queued',
+              'Send message now?',
+              `${who(lead)}. SENDS a real email/WhatsApp message to the HR contact. Sent messages cannot be unsent.`,
+              'Send now', 'destructive') },
             ...((lead as any).hr_email ? [{ label: 'Copy HR email', section: 'Manage', icon: <Copy />, onSelect: () => { navigator.clipboard?.writeText((lead as any).hr_email); toast({ title: 'Email copied', variant: 'success' }); } }] : []),
-            { label: lead.do_not_contact ? 'Allow contact again' : 'Mark Do-Not-Contact', section: 'Manage', icon: <XCircle />, danger: !lead.do_not_contact, onSelect: () => act(lead.id, 'dnc', leadsApi.setDoNotContact(lead.id, !lead.do_not_contact), lead.do_not_contact ? 'Contact allowed' : 'Marked do-not-contact') },
+            { label: lead.do_not_contact ? 'Allow contact again' : 'Mark Do-Not-Contact', section: 'Manage', icon: <XCircle />, danger: !lead.do_not_contact, onSelect: () => confirmAct(lead.id, 'dnc', () => leadsApi.setDoNotContact(lead.id, !lead.do_not_contact), lead.do_not_contact ? 'Contact allowed' : 'Marked do-not-contact',
+              lead.do_not_contact ? 'Allow contact again?' : 'Mark do-not-contact?',
+              lead.do_not_contact
+                ? `${who(lead)}. The lead re-enters outreach eligibility.`
+                : `${who(lead)}. It will be excluded from all outreach until re-allowed. Reversible.`,
+              lead.do_not_contact ? 'Allow contact' : 'Suppress lead') },
           ]} />
         </div>
       );
@@ -484,26 +592,62 @@ const Leads: React.FC = () => {
 
   return (
     <div className="space-y-4">
-      <PageHeader title="Leads" description="Your full India-fresher intelligence table — enrich, verify and draft any lead, one at a time or in bulk" actions={
+      <PageHeader eyebrow="Workspace" title="Leads" description="Your full India-fresher intelligence table — enrich, verify and draft any lead, one at a time or in bulk" actions={
         <>
           <div className="relative w-full sm:w-64">
             <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-            <input value={globalFilter} onChange={(e) => setGlobalFilter(e.target.value)} placeholder="Search leads…" className="input pl-9" />
+            <input value={globalFilter} onChange={(e) => setGlobalFilter(e.target.value)} placeholder="Search company, title, HR, email, source, city…" className="input pl-9" />
           </div>
-          <Button variant="outline" onClick={() => armyMutation.mutate()} loading={armyMutation.isLoading} title="Scrape every source and auto-enrich all leads">
-            <Zap className="h-4 w-4" />{armyMutation.isLoading ? 'Deploying…' : queued > 0 ? `Army · ${queued} running` : 'Run Army'}
-          </Button>
+          {armyMutation.isLoading || stopMutation.isLoading ? (
+            <Button variant="outline" loading disabled title="Army action in flight">
+              <Zap className="h-4 w-4" />Working…
+            </Button>
+          ) : queued > 0 ? (
+            <Button variant="destructive" onClick={() => setArmyStopConfirmOpen(true)} title="Stop the running army — in-flight sources cancel, queued scrape jobs are discarded">
+              <Square className="h-4 w-4" />Stop · {queued} running
+            </Button>
+          ) : (
+            <Button variant="outline" onClick={() => setArmyConfirmOpen(true)} title="Scrape every source and auto-enrich all leads">
+              <Zap className="h-4 w-4" />Run Army
+            </Button>
+          )}
         </>
       } />
+      <ConfirmDialog
+        open={armyStopConfirmOpen}
+        onClose={() => setArmyStopConfirmOpen(false)}
+        onConfirm={() => stopMutation.mutate()}
+        title="Stop the running army?"
+        description={`In-flight source scrapes cancel within seconds — already-scraped leads are kept. Queued scrape jobs are discarded. ${queued} lead${queued === 1 ? '' : 's'} already in the pipeline keep processing to completion.`}
+        confirmLabel="Stop Army"
+        confirmVariant="destructive"
+        loading={stopMutation.isLoading}
+      />
+      <ConfirmDialog
+        open={armyConfirmOpen}
+        onClose={() => setArmyConfirmOpen(false)}
+        onConfirm={() => armyMutation.mutate()}
+        title="Run Data Collection Army?"
+        description={`Sources to run: all configured. ${queued} lead${queued === 1 ? '' : 's'} currently in flight. Enrichment (OSINT → paid providers) fires where keys exist and may consume credits. This starts a long-running background job — safe to leave the page; progress streams live in the toolbar.`}
+        confirmLabel="Run Army"
+        confirmVariant="default"
+        loading={armyMutation.isLoading}
+      />
 
       {/* toolbar */}
       <div className="card flex flex-wrap items-center gap-2 p-3">
         <Select value={experienceFilter} onChange={(e) => setExperienceFilter(e.target.value as never)} className="w-40" aria-label="Experience"><option value="">All experience</option><option value="fresher">Fresher</option><option value="0-1yr">0-1 years</option><option value="0-2yr">0-2 years</option><option value="no-experience">No experience</option></Select>
         <Select value={workplaceFilter} onChange={(e) => setWorkplaceFilter(e.target.value as never)} className="w-32" aria-label="Workplace"><option value="">All workplaces</option><option value="remote">Remote</option><option value="onsite">On-site</option><option value="hybrid">Hybrid</option></Select>
         <Select value={salaryFilter} onChange={(e) => setSalaryFilter(e.target.value as never)} className="w-36" aria-label="Salary"><option value="">Any salary</option><option value="any">Salary disclosed</option><option value="5">₹5L+</option><option value="10">₹10L+</option><option value="20">₹20L+</option></Select>
-        <Select value={scoreBand || ''} onChange={(e) => setColumnFilters((f) => [...f.filter((x) => x.id !== 'score_band'), ...(e.target.value ? [{ id: 'score_band', value: e.target.value }] : [])])} className="w-32" aria-label="Score"><option value="">All scores</option><option value="hot">Hot ≥70</option><option value="warm">Warm 40+</option><option value="cold">Cold</option></Select>
+        <Select value={scoreBand || ''} onChange={(e) => setColumnFilters((f) => [...f.filter((x) => x.id !== 'score_band'), ...(e.target.value ? [{ id: 'score_band', value: e.target.value }] : [])])} className="w-32" aria-label="Score"><option value="">All scores</option><option value="hot">Hot 7–10</option><option value="warm">Warm 4–6</option><option value="cold">Cold 1–3</option></Select>
+        <Select value={freshnessFilter} onChange={(e) => { setFreshnessFilter(e.target.value as any); setPagination((p) => ({ ...p, pageIndex: 0 })); }} className="w-36" aria-label="Freshness"><option value="">All freshness</option><option value="fresh">&lt;24 hrs</option><option value="recent">&lt;7 days</option><option value="older">Older</option><option value="unknown">Unknown</option></Select>
         <Select value={pipelineStage || ''} onChange={(e) => setColumnFilters((f) => [...f.filter((x) => x.id !== 'pipeline_stage'), ...(e.target.value ? [{ id: 'pipeline_stage', value: e.target.value }] : [])])} className="w-40" aria-label="Stage"><option value="">All stages</option><option value="discovered">New</option><option value="enriched">Enriched</option><option value="verified">Verified</option><option value="drafted">Ready to send</option><option value="contacted">Sent</option><option value="replied">Replied</option><option value="bounced">Failed</option><option value="contact_unavailable">Needs enrichment</option><option value="verification_failed">Verify failed</option><option value="send_failed">Send failed</option><option value="suppressed">Suppressed</option></Select>
         <Select value={ownershipFilter} onChange={(e) => { setOwnershipFilter(e.target.value as never); setPagination((p) => ({ ...p, pageIndex: 0 })); }} className="w-36" aria-label="Owner"><option value="">All owners</option><option value="unclaimed">Unclaimed</option><option value="claimed">Claimed</option><option value="assigned">Assigned</option><option value="mine">Mine</option></Select>
+        <Select value={contactFilter} onChange={(e) => { setContactFilter(e.target.value as any); setPagination((p) => ({ ...p, pageIndex: 0 })); }} className="w-36" aria-label="Contact"><option value="">All contacts</option><option value="none">No contact</option><option value="partial">Partial</option><option value="enriched">Enriched</option><option value="verified">Verified</option></Select>
+        <Select value={dateFilter} onChange={(e) => { setDateFilter(e.target.value as any); setPagination((p) => ({ ...p, pageIndex: 0 })); }} className="w-36" aria-label="Discovered"><option value="">Any time</option><option value="24h">Last 24 hours</option><option value="7d">Last 7 days</option><option value="30d">Last 30 days</option></Select>
+        <input value={sourceFilter} onChange={(e) => { setSourceFilter(e.target.value); setPagination((p) => ({ ...p, pageIndex: 0 })); }} placeholder="Source…" className="input w-32" aria-label="Source" />
+        <input value={cityFilter} onChange={(e) => { setCityFilter(e.target.value); setPagination((p) => ({ ...p, pageIndex: 0 })); }} placeholder="City…" className="input w-32" aria-label="City" />
+        <input value={deptFilter} onChange={(e) => { setDeptFilter(e.target.value); setPagination((p) => ({ ...p, pageIndex: 0 })); }} placeholder="Department…" className="input w-36" aria-label="Department" />
         <div className="h-6 w-px bg-border" />
         <Menu align="start" ariaLabel="Columns" trigger={<Button variant="outline" size="sm"><Columns3 className="h-4 w-4" />Columns</Button>} items={ALL_COLUMNS.map((c) => ({ label: c.label, checked: visibility[c.id] !== false, onSelect: () => setVisibility((v) => ({ ...v, [c.id]: v[c.id] === false })) }))} />
         <Menu align="start" ariaLabel="Density" trigger={<Button variant="outline" size="sm" title={`Row density: ${density}`}><LayoutGrid className="h-4 w-4" />{density === 'compact' ? 'Compact' : 'Comfortable'}</Button>} items={[{ label: 'Comfortable', checked: density === 'comfortable', onSelect: () => setDensity('comfortable') }, { label: 'Compact', checked: density === 'compact', onSelect: () => setDensity('compact') }]} />
@@ -532,13 +676,13 @@ const Leads: React.FC = () => {
               <Users className="h-4 w-4 text-primary" /><span className="text-sm font-medium">{selectedIds.size} selected</span>
               <div className="h-5 w-px bg-border" />
               <span className="text-xs text-muted-foreground">Enrich:</span>
-              <Button variant="secondary" size="sm" onClick={() => { if (window.confirm(`Enrich ${selectedIds.size} leads? The engine picks OSINT → Snov → ContactOut → Apollo automatically.`)) bulkEnrichMutation.mutate({ ids: Array.from(selectedIds), provider: 'auto' }); }}><Sparkles className="h-3.5 w-3.5" />Enrich {selectedIds.size}</Button>
+              <Button variant="secondary" size="sm" onClick={() => setActionConfirm({ title: `Enrich ${selectedIds.size} leads?`, description: 'The engine picks OSINT first, then Snov.io, ContactOut and Apollo automatically. Paid lookups consume provider credits per lead.', confirmLabel: `Enrich ${selectedIds.size}`, run: () => { setActionConfirm(null); bulkEnrichMutation.mutate({ ids: Array.from(selectedIds), provider: 'auto' }); } })}><Sparkles className="h-3.5 w-3.5" />Enrich {selectedIds.size}</Button>
               <div className="h-5 w-px bg-border" />
               <span className="text-xs text-muted-foreground">Own:</span>
-              <Button variant="secondary" size="sm" onClick={() => bulkClaimMutation.mutate(Array.from(selectedIds))} loading={bulkClaimMutation.isLoading}><Users className="h-3.5 w-3.5" />Claim {selectedIds.size}</Button>
+              <Button variant="secondary" size="sm" onClick={() => setActionConfirm({ title: `Claim ${selectedIds.size} leads?`, description: 'They become yours instantly and leave the shared claim pool. Leads already owned by someone else are skipped.', confirmLabel: `Claim ${selectedIds.size}`, run: () => { setActionConfirm(null); bulkClaimMutation.mutate(Array.from(selectedIds)); } })} loading={bulkClaimMutation.isLoading}><Users className="h-3.5 w-3.5" />Claim {selectedIds.size}</Button>
               {isAdmin && <Button variant="secondary" size="sm" onClick={() => setBulkAssignOpen(true)}><Users className="h-3.5 w-3.5" />Assign {selectedIds.size}</Button>}
               <Select value={draftChannel} onChange={(e) => setDraftChannel(e.target.value as any)} className="h-8 w-32" aria-label="Channel"><option value="both">Both</option><option value="email">Email</option><option value="whatsapp">WhatsApp</option></Select>
-              <Button size="sm" onClick={() => { if (window.confirm(`Generate drafts for ${selectedIds.size} leads?`)) bulkDraftMutation.mutate({ leadIds: Array.from(selectedIds), channel: draftChannel }); }} loading={bulkDraftMutation.isLoading}><Play className="h-3.5 w-3.5" />Draft</Button>
+              <Button size="sm" onClick={() => setActionConfirm({ title: `Generate drafts for ${selectedIds.size} leads?`, description: 'Drafts are written by Gemini from verified lead context only. Nothing is sent until you review and approve each draft.', confirmLabel: 'Generate drafts', run: () => { setActionConfirm(null); bulkDraftMutation.mutate({ leadIds: Array.from(selectedIds), channel: draftChannel }); } })} loading={bulkDraftMutation.isLoading}><Play className="h-3.5 w-3.5" />Draft</Button>
               <Button variant="ghost" size="sm" className="ml-auto" onClick={() => setSelectedIds(new Set())}>Clear</Button>
             </div>
           </motion.div>
@@ -578,7 +722,7 @@ const Leads: React.FC = () => {
             </thead>
             <tbody>
               {table.getRowModel().rows.length === 0 ? (
-                <tr><td colSpan={columns.length} className="p-4"><EmptyState icon={Users} title="No leads found." description="Deploy the army to discover India fresher jobs, or adjust your search." action={<Button variant="outline" size="sm" onClick={() => armyMutation.mutate()}><Zap className="h-3.5 w-3.5" />Run Army</Button>} /></td></tr>
+                <tr><td colSpan={columns.length} className="p-4"><EmptyState icon={Users} title="No leads found." description="Deploy the army to discover India fresher jobs, or adjust your search." action={<Button variant="outline" size="sm" onClick={() => setArmyConfirmOpen(true)}><Zap className="h-3.5 w-3.5" />Run Army</Button>} /></td></tr>
               ) : table.getRowModel().rows.map((row) => {
                 const open = expanded.has(row.original.id);
                 const lead: any = row.original;
@@ -620,6 +764,18 @@ const Leads: React.FC = () => {
 
       <ImportLeadsModal open={importOpen} onClose={() => setImportOpen(false)} onDone={onImported} />
 
+      {actionConfirm && (
+        <ConfirmDialog
+          open
+          onClose={() => setActionConfirm(null)}
+          onConfirm={() => actionConfirm.run()}
+          title={actionConfirm.title}
+          description={actionConfirm.description}
+          confirmLabel={actionConfirm.confirmLabel}
+          confirmVariant={actionConfirm.variant || 'default'}
+        />
+      )}
+
       {bulkAssignOpen && (
         <div className="fixed inset-0 z-overlay grid place-items-center bg-black/50 p-4" onClick={() => setBulkAssignOpen(false)}>
           <div className="w-full max-w-sm rounded-xl border border-border bg-surface p-4 shadow-float" onClick={(e) => e.stopPropagation()} role="dialog" aria-label="Assign selected leads">
@@ -627,7 +783,7 @@ const Leads: React.FC = () => {
             <input value={memberSearch} onChange={(e) => setMemberSearch(e.target.value)} placeholder="Search member…" className="input mb-2" aria-label="Search member" />
             <div className="max-h-64 space-y-1 overflow-auto">
               {members.filter((m) => m.email.toLowerCase().includes(memberSearch.toLowerCase())).map((m) => (
-                <button key={m.id} onClick={() => bulkAssignMutation.mutate({ ids: Array.from(selectedIds), userId: m.id })} className="flex w-full items-center gap-2 rounded-lg border border-border px-3 py-2 text-left text-sm hover:bg-accent">
+                <button key={m.id} onClick={() => setActionConfirm({ title: `Assign ${selectedIds.size} leads to ${m.email}?`, description: 'Ownership moves immediately; the previous owner loses access unless they are admin. Reversible by reassigning.', confirmLabel: 'Assign leads', run: () => { setActionConfirm(null); setBulkAssignOpen(false); bulkAssignMutation.mutate({ ids: Array.from(selectedIds), userId: m.id }); } })} className="flex w-full items-center gap-2 rounded-lg border border-border px-3 py-2 text-left text-sm hover:bg-accent">
                   <span className="min-w-0 flex-1 truncate">{m.email}</span>
                   <span className="text-xs capitalize text-muted-foreground">{m.role}</span>
                 </button>
@@ -649,7 +805,7 @@ const Leads: React.FC = () => {
             <input value={memberSearch} onChange={(e) => setMemberSearch(e.target.value)} placeholder="Search member…" className="input mb-2" aria-label="Search member" />
             <div className="max-h-64 space-y-1 overflow-auto">
               {members.filter((m) => m.email.toLowerCase().includes(memberSearch.toLowerCase())).map((m) => (
-                <button key={m.id} onClick={() => assignMutation.mutate({ id: assignLead.id, userId: m.id })} className="flex w-full items-center gap-2 rounded-lg border border-border px-3 py-2 text-left text-sm hover:bg-accent">
+                <button key={m.id} onClick={() => setActionConfirm({ title: `Assign lead to ${m.email}?`, description: `${(assignLead as any)?.company_name || 'This lead'} moves to ${m.email} immediately. Reversible by reassigning.`, confirmLabel: 'Assign lead', run: () => { setActionConfirm(null); if (assignLead) assignMutation.mutate({ id: assignLead.id, userId: m.id }); } })} className="flex w-full items-center gap-2 rounded-lg border border-border px-3 py-2 text-left text-sm hover:bg-accent">
                   <span className="min-w-0 flex-1 truncate">{m.email}</span>
                   <span className="text-xs capitalize text-muted-foreground">{m.role}</span>
                 </button>

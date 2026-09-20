@@ -23,16 +23,27 @@ async function main() {
     return;
   }
   const sql = getDB();
-  const existing = await sql`SELECT id FROM users WHERE role = 'admin' LIMIT 1`;
+  // SAFE bootstrap keyed on email, never on role: the old shortcut
+  // (`SELECT ... WHERE role='admin' LIMIT 1`) skipped promotion when ANY admin
+  // existed (wrong email) and the ON CONFLICT DO UPDATE overwrote the
+  // password_hash of an existing sales_rep row with ADMIN_EMAIL, locking out
+  // its owner. Now: row exists + role=admin -> no-op; row exists + other role
+  // -> promote role ONLY, preserving password_hash; no row -> INSERT new admin.
+  const existing = await sql`SELECT id, role FROM users WHERE email = ${email} LIMIT 1`;
   if (existing.length > 0) {
-    console.info('ℹ️  An admin already exists — skipping bootstrap.');
+    if ((existing[0] as { role: string }).role === 'admin') {
+      console.info('ℹ️  Bootstrap admin already exists — skipping.');
+      return;
+    }
+    await sql`UPDATE users SET role = 'admin' WHERE email = ${email}`;
+    console.info(`✅ Promoted existing user to admin: ${email} (password unchanged)`);
     return;
   }
   const hash = await hashPassword(password);
   await sql`
     INSERT INTO users (email, password_hash, role, api_keys)
     VALUES (${email}, ${hash}, 'admin', '{}')
-    ON CONFLICT (email) DO UPDATE SET role = 'admin'`;
+    ON CONFLICT (email) DO NOTHING`;
   console.info(`✅ Bootstrap admin ready: ${email}`);
 }
 

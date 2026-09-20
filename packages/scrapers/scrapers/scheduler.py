@@ -50,6 +50,40 @@ async def load_enabled_sources(db_pool) -> list[str] | None:
         return None
 
 
+# Stored freshness reclassification: rows age out of their label, so once per
+# day every posting whose stored category disagrees with its timestamps is
+# corrected in a single UPDATE. Writers set the value at insert/merge; this
+# keeps long-lived rows honest without touching Postgres-forbidden NOW() in a
+# GENERATED expression.
+REFRESH_FRESHNESS_SQL = """UPDATE job_postings SET freshness_category =
+    CASE WHEN COALESCE(posted_at, first_seen_at) > NOW() - INTERVAL '24 hours' THEN 'fresh'
+         WHEN COALESCE(posted_at, first_seen_at) > NOW() - INTERVAL '7 days' THEN 'recent'
+         WHEN COALESCE(posted_at, first_seen_at) IS NULL THEN 'unknown'
+         ELSE 'older' END
+    WHERE freshness_category IS DISTINCT FROM (
+    CASE WHEN COALESCE(posted_at, first_seen_at) > NOW() - INTERVAL '24 hours' THEN 'fresh'
+         WHEN COALESCE(posted_at, first_seen_at) > NOW() - INTERVAL '7 days' THEN 'recent'
+         WHEN COALESCE(posted_at, first_seen_at) IS NULL THEN 'unknown'
+         ELSE 'older' END)"""
+
+
+async def refresh_freshness(db_pool) -> int:
+    """Reclassify aged freshness labels. Returns rows corrected (0 when idle)."""
+    if db_pool is None:
+        return 0
+    try:
+        async with db_pool.acquire() as conn:
+            status = await conn.execute(REFRESH_FRESHNESS_SQL)
+        # asyncpg returns 'UPDATE <n>'; tolerate mocks returning None.
+        try:
+            return int(str(status).split()[-1])
+        except (ValueError, IndexError):
+            return 0
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"freshness refresh failed: {e}")
+        return 0
+
+
 # Data-retention (DPDP 'storage limitation'): personal data must not be kept
 # longer than needed. Opt-in via env (0/absent = disabled) so it never surprises
 # an operator; when set, once per day we ANONYMISE (not hard-delete) stale, never
@@ -289,6 +323,13 @@ async def daily_scrape_scheduler(redis_client, sources: list[str] | None = None,
             await enforce_retention(db_pool)
         except Exception as e:  # noqa: BLE001
             logger.warning(f"retention sweep failed: {e}")
+        # Nightly freshness reclassification so stored <24H/<7D/OLDER labels age out.
+        try:
+            corrected = await refresh_freshness(db_pool)
+            if corrected:
+                logger.info(f"Freshness refresh corrected {corrected} postings")
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"freshness refresh failed: {e}")
         # Operator digest (opt-in via TELEGRAM_* env; no-op off).
         try:
             from .utils.ops_digest import maybe_send_daily_digest

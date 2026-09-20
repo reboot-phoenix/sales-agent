@@ -99,7 +99,7 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
               <div
                 key={t.id}
                 className={cn(
-                  "pointer-events-auto relative overflow-hidden rounded-xl border border-border bg-surface p-4 pr-9 shadow-popover",
+                  "pointer-events-auto relative overflow-hidden rounded-2xl border border-border bg-surface p-4 pr-9 shadow-popover",
                   isLeaving ? "animate-toast-out" : "animate-toast-in"
                 )}
               >

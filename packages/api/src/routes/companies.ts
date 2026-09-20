@@ -116,14 +116,23 @@ export const companiesRoutes: FastifyPluginAsync = async (fastify) => {
     const { name, domain, about, industry, size_estimate, default_email, default_phone, website_url } = parseResult.data;
 
     const sql = getDB();
-    const result = await sql.unsafe(
-      `INSERT INTO companies (name, domain, about, industry, size_estimate, default_email, default_phone, website_url)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-       RETURNING id, name, domain, about, industry, size_estimate, default_email, default_phone, website_url, created_at, updated_at`,
-      [name, domain || null, about || null, industry || null, size_estimate || null, default_email || null, default_phone || null, website_url || null],
-    );
+    try {
+      const result = await sql.unsafe(
+        `INSERT INTO companies (name, domain, about, industry, size_estimate, default_email, default_phone, website_url)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+         RETURNING id, name, domain, about, industry, size_estimate, default_email, default_phone, website_url, created_at, updated_at`,
+        [name, domain || null, about || null, industry || null, size_estimate || null, default_email || null, default_phone || null, website_url || null],
+      );
 
-    return reply.status(201).send({ company: result[0] });
+      return reply.status(201).send({ company: result[0] });
+    } catch (err: any) {
+      // Unique name/domain collisions are a client error, not a 500.
+      const msg = String(err?.message || '');
+      if (err?.code === '23505' || /duplicate key/i.test(msg) || /companies_name_lower_key/i.test(msg)) {
+        return reply.status(409).send({ error: 'Company already exists' });
+      }
+      throw err;
+    }
   });
 
   fastify.patch('/:id', { preValidation: [authorize(['admin', 'sales_rep'])] }, async (req, reply) => {
@@ -156,6 +165,18 @@ export const companiesRoutes: FastifyPluginAsync = async (fastify) => {
     values.push(id);
 
     const sql = getDB();
+    // RBAC: sales_rep may only mutate companies tied to leads they own
+    // (assigned OR claimed). Return 404 to avoid leaking existence.
+    const coViewer = req.user as { id: string; role: string };
+    if (coViewer?.role !== 'admin') {
+      const owned = await sql.unsafe(
+        `SELECT 1 FROM leads l WHERE l.company_id = $1 AND (l.assigned_to = $2 OR l.claimed_by = $2) LIMIT 1`,
+        [id, coViewer.id],
+      );
+      if (!owned || owned.length === 0) {
+        return reply.status(404).send({ error: 'Company not found' });
+      }
+    }
     const result = await sql.unsafe(
       `UPDATE companies SET ${updateFields.join(', ')} WHERE id = $${values.length} RETURNING *`,
       values as any[],

@@ -110,4 +110,9 @@ CREATE UNIQUE INDEX IF NOT EXISTS companies_name_lower_key ON companies (lower(n
 -- the index every imported row would sequential-scan companies/job_postings.
 CREATE EXTENSION IF NOT EXISTS pg_trgm;
 CREATE INDEX IF NOT EXISTS idx_companies_name_alnum ON companies (lower(regexp_replace(name, '[^a-zA-Z0-9]', '', 'g')));
-CREATE INDEX IF NOT EXISTS idx_jobpostings_title_trgm_sim ON job_postings USING gin (title gin_trgm_ops);
+-- idx_jobposting_title_trgm (above) already covers trigram similarity on
+-- job_postings.title; the duplicate idx_jobpostings_title_trgm_sim was removed.
+-- Inbound webhook dedup: provider retries must not insert the same message twice.
+-- UNIQUE enforces it; the existing non-unique inbound_provider_msg_idx remains as
+-- the lookup path for the webhook handler.
+CREATE UNIQUE INDEX IF NOT EXISTS uq_inbound_provider_msg ON inbound_messages (provider_message_id) WHERE provider_message_id IS NOT NULL;

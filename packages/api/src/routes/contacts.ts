@@ -154,6 +154,18 @@ export const contactsRoutes: FastifyPluginAsync = async (fastify) => {
     values.push(id);
 
     const sql = getDB();
+    // RBAC: sales_rep may only mutate contacts attached to leads they own
+    // (assigned OR claimed). Return 404 to avoid leaking existence.
+    const viewer = req.user as { id: string; role: string };
+    if (viewer?.role !== 'admin') {
+      const owned = await sql.unsafe(
+        `SELECT 1 FROM leads l WHERE l.hr_contact_id = $1 AND (l.assigned_to = $2 OR l.claimed_by = $2) LIMIT 1`,
+        [id, viewer.id],
+      );
+      if (!owned || owned.length === 0) {
+        return reply.status(404).send({ error: 'Contact not found' });
+      }
+    }
     const result = await sql.unsafe(
       `UPDATE hr_contacts SET ${updateFields.join(', ')} WHERE id = $${values.length} RETURNING *`,
       values as any[],

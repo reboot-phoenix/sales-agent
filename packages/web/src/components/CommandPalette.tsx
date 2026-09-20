@@ -6,7 +6,6 @@ import {
   Settings, LogOut, Zap, CornerDownLeft, Command,
 } from 'lucide-react';
 import { useAuthStore } from '@/stores/auth';
-import { admin } from '@/lib/api';
 import { useToast } from '@/components/ui/toast';
 import { cn } from '@/components/ui/cn';
 
@@ -61,8 +60,12 @@ export function CommandPalette() {
     const actions: Cmd[] = [
       { id: 'army', label: 'Run Full Army', hint: 'scrape + enrich all', icon: <Zap />, group: 'Actions', run: () => {
         if (!isAdmin) { toast({ title: 'Admin only', variant: 'warning' }); return; }
-        admin.runArmy().then(() => toast({ title: 'Army deployed', description: 'Scraping all sources and enriching.', variant: 'success' })).catch((e) => toast({ title: 'Failed', description: (e as Error).message, variant: 'error' }));
+        // Never fire the army blind: hand off to the Dashboard/Leads confirm
+        // dialog (they listen for this event). A direct runArmy() here was the
+        // one path with no confirmation and no visible running state.
         setOpen(false);
+        go('/dashboard');
+        window.setTimeout(() => window.dispatchEvent(new CustomEvent('hiregen:confirm-army')), 150);
       } },
       { id: 'logout', label: 'Sign out', icon: <LogOut />, group: 'Account', run: () => { revokeCurrentToken().then(() => logout()).then(() => go('/login')); } },
     ];

@@ -751,6 +751,44 @@ def parse_posted_at(value: Any) -> Optional[datetime]:
     return None
 
 
+def freshness_case_sql(posted_expr: str) -> str:
+    """SQL CASE classifying a posting timestamp into fresh/recent/older/unknown.
+
+    `posted_expr` is any SQL expression for the source posting time (a bind
+    like $21 or COALESCE(posted_at, $10)). NULL means the source gave no date:
+    'unknown', never a pretended exact age. Pure string builder — testable
+    without a database.
+
+    ORDER MATTERS: the IS NULL test comes LAST. Postgres resolves an
+    unknown-type parameter from its first typed context; leading with
+    `WHEN ($N) IS NULL` leaves the planner typeless and the server rejects
+    the statement with AmbiguousParameterError. Comparisons against
+    timestamptz type the parameter first; a NULL value fails every `>`
+    and still lands on 'unknown'. Same result, planner-safe.
+    """
+    return (
+        f"CASE WHEN ({posted_expr}) > NOW() - INTERVAL '24 hours' THEN 'fresh' "
+        f"WHEN ({posted_expr}) > NOW() - INTERVAL '7 days' THEN 'recent' "
+        f"WHEN ({posted_expr}) IS NULL THEN 'unknown' "
+        f"ELSE 'older' END"
+    )
+
+
+def freshness_for(posted_at: datetime | None, now: datetime | None = None) -> str:
+    """Python mirror of freshness_case_sql for non-SQL callers. Pure/testable."""
+    if posted_at is None:
+        return "unknown"
+    ref = now or datetime.now(timezone.utc)
+    age = (ref - posted_at).total_seconds()
+    if age < 0:
+        return "fresh"
+    if age < 24 * 3600:
+        return "fresh"
+    if age < 7 * 24 * 3600:
+        return "recent"
+    return "older"
+
+
 def job_posting_columns(normalized: dict[str, Any]) -> dict[str, Any]:
     """Map a normalized lead onto every job_postings column.
 
@@ -1431,6 +1469,7 @@ async def insert_lead(sql: asyncpg.Connection, normalized: dict[str, Any]) -> st
                        employment_type = COALESCE(employment_type, $8),
                        apply_url = COALESCE(apply_url, $9),
                        posted_at = COALESCE(posted_at, $10),
+                       freshness_category = CASE WHEN (COALESCE(posted_at, $10)) > NOW() - INTERVAL '24 hours' THEN 'fresh' WHEN (COALESCE(posted_at, $10)) > NOW() - INTERVAL '7 days' THEN 'recent' WHEN (COALESCE(posted_at, $10)) IS NULL THEN 'unknown' ELSE 'older' END,
                        about_job = COALESCE(about_job, $11),
                        department = COALESCE(department, $12),
                        openings_count = COALESCE(openings_count, $13),
@@ -1472,6 +1511,7 @@ async def insert_lead(sql: asyncpg.Connection, normalized: dict[str, Any]) -> st
                        employment_type = COALESCE(employment_type, $8),
                        apply_url = COALESCE(apply_url, $9),
                        posted_at = COALESCE(posted_at, $10),
+                       freshness_category = CASE WHEN (COALESCE(posted_at, $10)) > NOW() - INTERVAL '24 hours' THEN 'fresh' WHEN (COALESCE(posted_at, $10)) > NOW() - INTERVAL '7 days' THEN 'recent' WHEN (COALESCE(posted_at, $10)) IS NULL THEN 'unknown' ELSE 'older' END,
                        about_job = COALESCE(about_job, $11),
                        department = COALESCE(department, $12),
                        openings_count = COALESCE(openings_count, $13),
@@ -1613,10 +1653,12 @@ async def insert_lead(sql: asyncpg.Connection, normalized: dict[str, Any]) -> st
                 parser_version, content_hash,
                 location, city, state, country, location_type, employment_type,
                 is_work_from_home, apply_url, posted_at, about_job, department,
-                openings_count, salary_min, salary_max, salary_currency, salary_period)
+                openings_count, salary_min, salary_max, salary_currency, salary_period,
+                freshness_category)
                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
                        $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23,
-                       $24, $25, $26, $27, $28)
+                       $24, $25, $26, $27, $28,
+                       """ + freshness_case_sql("$21") + """)
                RETURNING id""",
             company_id,
             hr_id,

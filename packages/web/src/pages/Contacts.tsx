@@ -271,6 +271,7 @@ const Contacts: React.FC = () => {
   return (
     <div className="space-y-4">
       <PageHeader
+        eyebrow="Workspace"
         title="HR Contacts"
         description="Manage the HR contacts associated with your leads"
         actions={

@@ -2,6 +2,7 @@ import os
 import json
 import asyncio
 import logging
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from fastapi import Depends, FastAPI, Header, HTTPException, BackgroundTasks
 from pydantic import BaseModel
@@ -13,15 +14,30 @@ from scrapers.utils.db import get_db_pool
 
 logger = logging.getLogger(__name__)
 
+# Shared asyncpg pool captured at startup so the on-demand /army/run sweep can
+# query under-enriched leads without creating a second pool.
+_db_pool = None
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Replaces deprecated @app.on_event("startup"/"shutdown"). Consumers start
+    # here so they are running before the service reports ready.
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    )
+    asyncio.create_task(start_consumers())
+    yield
+    # Shutdown: nothing persistent to close (pools/clients are lazy singletons).
+
+
 app = FastAPI(
     title="HireGen Scraper Fleet API",
     description="Python worker service for scraping, enrichment, verification, and AI drafting",
     version="0.1.0",
+    lifespan=lifespan,
 )
-
-# Shared asyncpg pool captured at startup so the on-demand /army/run sweep can
-# query under-enriched leads without creating a second pool.
-_db_pool = None
 
 WORKER_API_SECRET = os.environ.get("WORKER_API_SECRET", "")
 
@@ -58,10 +74,20 @@ class HealthResponse(BaseModel):
 
 @app.get("/health", response_model=HealthResponse)
 async def health():
-    redis_ok = bool(get_redis())
+    # Liveness of the backing services, not just client construction:
+    # get_redis()/get_db_pool() return truthy handles even when the server is
+    # down, so ping a command to report honestly.
+    try:
+        rc = get_redis()
+        await rc.ping()
+        redis_ok = True
+    except Exception:
+        redis_ok = False
     try:
         db_pool = await get_db_pool()
-        db_ok = bool(db_pool)
+        async with db_pool.acquire() as _c:
+            await _c.fetchval("SELECT 1")
+        db_ok = True
     except Exception:
         db_ok = False
     return HealthResponse(
@@ -154,7 +180,58 @@ async def army_status(_auth: bool = Depends(require_worker_key)):
         "enrichment": await llen("enrichment_queue:requests"),
         "verification": await llen("verification_queue:requests"),
         "draft": await llen("draft_queue:requests"),
+        "scrape": await llen("scrape_queue:requests"),
+        "halted": await _halted(redis_client),
     }
+
+
+async def _halted(redis_client) -> bool:
+    try:
+        from scrapers.scrape_consumer import halt_requested
+        return await halt_requested(redis_client)
+    except Exception:  # noqa: BLE001
+        return False
+
+
+@app.post("/army/stop")
+async def army_stop(_auth: bool = Depends(require_worker_key)):
+    """Cooperative stop: in-flight sources are cancelled within seconds
+    (finished work kept), queued scrape jobs are discarded, and a TTL-bounded
+    halt flag blocks subsequently-starting jobs until it expires. Downstream
+    queues (enrich→verify→draft) drain naturally — discovered leads are never
+    stranded mid-pipeline. Returns stopped:false without setting the flag when
+    nothing is running, so a stray stop can never wedge future runs."""
+    from scrapers.scrape_consumer import HALT_KEY, HALT_TTL_SECONDS
+    redis_client = get_redis()
+    async def llen(k):
+        try:
+            return await redis_client.llen(k)
+        except Exception:  # noqa: BLE001
+            return -1
+    queues = {
+        "raw": await llen("raw_leads_queue:requests"),
+        "enrichment": await llen("enrichment_queue:requests"),
+        "verification": await llen("verification_queue:requests"),
+        "draft": await llen("draft_queue:requests"),
+        "scrape": await llen("scrape_queue:requests"),
+    }
+    active = sum(v for v in queues.values() if v > 0)
+    if active <= 0 and not await _halted(redis_client):
+        return {"stopped": False, "reason": "nothing running", "queues": queues}
+    try:
+        await redis_client.set(
+            HALT_KEY, datetime.now(timezone.utc).isoformat(), ex=HALT_TTL_SECONDS)
+    except Exception as e:  # noqa: BLE001
+        return {"stopped": False, "reason": f"halt flag unwritable: {e}", "queues": queues}
+    cleared = 0
+    try:
+        cleared = int(await redis_client.llen("scrape_queue:requests") or 0)
+        if cleared:
+            await redis_client.delete("scrape_queue:requests")
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"army stop: backlog clear failed: {e}")
+    logger.info(f"Army stop: halt set, {cleared} queued scrape jobs discarded")
+    return {"stopped": True, "cleared_queued_jobs": cleared, "queues": queues}
 
 
 @app.post("/army/run")
@@ -175,6 +252,14 @@ async def army_run(req: ScrapeRequest, _auth: bool = Depends(require_worker_key)
         except Exception as e:  # noqa: BLE001
             logger.warning(f"source toggles unreadable, using defaults: {e}")
             sources = None
+    try:
+        # An explicit new run overrides a previous stop: without this, the
+        # TTL-bounded halt flag would cancel the very run the operator just
+        # confirmed at job-start (toast says "deployed", nothing runs).
+        from scrapers.scrape_consumer import HALT_KEY
+        await redis_client.delete(HALT_KEY)
+    except Exception:  # noqa: BLE001
+        pass
     await redis_client.lpush(
         "scrape_queue:requests",
         json.dumps({
@@ -192,21 +277,6 @@ async def army_run(req: ScrapeRequest, _auth: bool = Depends(require_worker_key)
     except Exception as e:  # noqa: BLE001
         logger.warning(f"army sweep failed (scrape still queued): {e}")
     return {"message": "Army run queued", "run_id": run_id, "sweep_reenqueued": swept}
-
-
-@app.on_event("startup")
-async def startup_event():
-    import logging
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    )
-    asyncio.create_task(start_consumers())
-
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    pass
 
 
 async def start_consumers():

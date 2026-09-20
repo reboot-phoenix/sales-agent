@@ -58,6 +58,9 @@ services:
       HOST: 0.0.0.0
       WORKERS_URL: http://workers:8000
       WORKER_API_SECRET: ${WORKER_API_SECRET}
+      # Trusted reverse proxy (web nginx) forwards X-Forwarded-For; trust it so
+      # req.ip / rate-limiting see the real client IP (server.ts TRUST_PROXY).
+      TRUST_PROXY: "true"
     depends_on:
       postgres:
         condition: service_healthy

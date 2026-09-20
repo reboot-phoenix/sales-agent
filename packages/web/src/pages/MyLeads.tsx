@@ -12,7 +12,9 @@ import { PageLoader } from '@/components/ui/spinner';
 import { EmptyState } from '@/components/ui/empty-state';
 import { ErrorState } from '@/components/ui/error-state';
 import { Pagination } from '@/components/ui/pagination';
+import { ConfirmDialog } from '@/components/ui/confirm-dialog';
 import { stageMeta, formatDate } from '@/lib/format';
+import { score10 } from '@/lib/freshness';
 import { Eye, Users, RefreshCw, Search, Zap, Loader2 } from 'lucide-react';
 
 function ownerLabel(l: Lead): string {
@@ -35,6 +37,7 @@ const MyLeads: React.FC = () => {
   const [search, setSearch] = useState('');
   const [stage, setStage] = useState('');
   const [busy, setBusy] = useState<Record<string, string>>({});
+  const [confirmEnrich, setConfirmEnrich] = useState<{ id: string; label: string } | null>(null);
   const limit = 25;
 
   const { data, isLoading, isError, error, refetch, isFetching } = useQuery(
@@ -69,6 +72,7 @@ const MyLeads: React.FC = () => {
   return (
     <div className="space-y-4">
       <PageHeader
+        eyebrow="Workspace"
         title="My Leads"
         description={`Your claimed + assigned work queue · ${pagination?.total ?? 0} leads`}
         actions={
@@ -118,7 +122,7 @@ const MyLeads: React.FC = () => {
                 <tr><td colSpan={7} className="p-4"><EmptyState icon={Users} title="No leads yet." description="Claim unclaimed leads from the Leads page — they land here and survive refresh." action={<Button variant="outline" size="sm" onClick={() => navigate('/leads')}>Browse Leads</Button>} /></td></tr>
               ) : rows.map((l: any) => (
                 <tr key={l.id} className="border-b border-border last:border-0 hover:bg-accent/50">
-                  <td className="table-td"><span className="inline-flex h-8 w-8 items-center justify-center rounded-full border bg-muted text-[13px] font-bold tabular-nums">{l.lead_score}</span></td>
+                  <td className="table-td"><span className="inline-flex h-8 w-8 items-center justify-center rounded-full border bg-muted text-[13px] font-bold tabular-nums" title={`${l.lead_score}/100`}>{l.score_10 ?? score10(l.lead_score)}<span className="text-[10px] font-medium text-muted-foreground">/10</span></span></td>
                   <td className="table-td"><p className="truncate font-medium">{l.company_name || '—'}</p><p className="truncate text-xs text-muted-foreground">{l.job_title || ''}</p></td>
                   <td className="table-td">{l.hr_name ? <div className="flex items-center gap-2"><Avatar name={l.hr_name} size="sm" /><div className="min-w-0"><p className="truncate text-[13px] font-medium">{l.hr_name}</p>{l.hr_email && <p className="truncate text-xs text-muted-foreground">{l.hr_email}</p>}</div></div> : <span className="text-[12px] text-warning">needs enrichment</span>}</td>
                   <td className="table-td"><span className="text-[12px] text-muted-foreground">{ownerLabel(l)}</span></td>
@@ -127,7 +131,7 @@ const MyLeads: React.FC = () => {
                   <td className="table-td">
                     <div className="flex items-center justify-end gap-1.5">
                       <button type="button" title="Open" onClick={() => navigate(`/leads/${l.id}`)} className="grid h-7 w-7 place-items-center rounded-full border border-border text-muted-foreground hover:text-foreground"><Eye className="h-3.5 w-3.5" /></button>
-                      <Button variant="secondary" size="sm" disabled={!!busy[l.id]} onClick={() => act(l.id, 'enrich', leadsApi.enrich(l.id, 'auto'), 'Enrichment started')}>
+                      <Button variant="secondary" size="sm" disabled={!!busy[l.id]} onClick={() => setConfirmEnrich({ id: l.id, label: `${l.company_name || 'This lead'}${l.job_title ? ` · ${l.job_title}` : ''}` })}>
                         {busy[l.id] === 'enrich' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Zap className="h-3.5 w-3.5" />}Enrich
                       </Button>
                     </div>
@@ -139,6 +143,16 @@ const MyLeads: React.FC = () => {
         </div>
         {pagination && <div className="border-t border-border"><Pagination pagination={pagination} onPageChange={(p: number) => setPage(p)} /></div>}
       </div>
+      {confirmEnrich && (
+        <ConfirmDialog
+          open
+          onClose={() => setConfirmEnrich(null)}
+          onConfirm={() => { const c = confirmEnrich; setConfirmEnrich(null); act(c.id, 'enrich', leadsApi.enrich(c.id, 'auto'), 'Enrichment started'); }}
+          title="Enrich this lead?"
+          description={`${confirmEnrich.label}. Runs the free OSINT cascade first, then paid providers where keys exist — paid lookups may consume credits.`}
+          confirmLabel="Enrich"
+        />
+      )}
     </div>
   );
 };

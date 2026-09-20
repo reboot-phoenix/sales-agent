@@ -641,10 +641,22 @@ async def run_enrichment_cascade(
     return enrichment_result, used_provider, credits_used, status
 
 
+def _as_list(value: Any) -> list:
+    """Normalize a JSONB column to a list. Legacy rows may hold a bare scalar
+    string (or NULL) where a list is expected — concatenating those raised
+    `TypeError: can only concatenate str (not "list")` and left the enrichment
+    job stuck at 'running' forever (seen live 2026-09-20)."""
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return value
+    return [value]
+
+
 def _merge_lists(old: Any, new: Any) -> list:
     """Dedupe-preserving merge for JSONB array columns (emails, phones, tech)."""
     seen: list = []
-    for v in (old or []) + (new or []):
+    for v in _as_list(old) + _as_list(new):
         if v and v not in seen:
             seen.append(v)
     return seen
@@ -811,6 +823,11 @@ async def process_enrichment_job(
     # least one real way to reach the person. Name-only findings must NOT be
     # inserted (used to crash on the CHECK and retry 5x into the DLQ).
     has_locator = bool(person["personal_email"] or person["personal_mobile"] or person["linkedin_url"])
+    # M7: LinkedIn alone is locatable but NOT contactable. The 'enriched'
+    # stage requires an email or phone; LinkedIn-only leads go to
+    # 'contact_unavailable' instead of sitting 'enriched' forever with no
+    # channel to verify/send on.
+    has_contactable = bool(person["personal_email"] or person["personal_mobile"])
 
     try:
         async with db_pool.acquire() as conn:
@@ -975,7 +992,7 @@ async def process_enrichment_job(
             # enrichment army found NO usable contact is marked 'contact_unavailable'
             # (never a fabricated contact), and is still picked up by the daily
             # re-enrichment sweep. Only leads with a real contact advance to verify.
-            has_contact = has_locator
+            has_contact = has_contactable
             await conn.execute(
                 "UPDATE leads SET pipeline_stage = $2, updated_at = NOW() WHERE id = $1",
                 lead_id,

@@ -17,7 +17,11 @@ import asyncpg
 from .utils.db import get_db_pool
 from .queue import requeue_or_dlq, reliable_brpop, ack, publish_event
 from .verification_worker import verify_email_reacher, verify_whatsapp
-from .send_worker import send_email, send_whatsapp, send_idempotency_key
+from .send_worker import (
+    send_email, send_whatsapp, send_idempotency_key,
+    _is_suppressed, domain_sent_count, email_domain,
+    build_unsubscribe_footer,
+)
 from .api_utils.scoring_client import recompute_lead_score
 
 logger = logging.getLogger(__name__)
@@ -138,8 +142,37 @@ async def process_verify_and_send_job(
             email_status, whatsapp_status, lead_id,
         )
 
-        # Step 2: Send if verification passes
+        # Step 2: Send if verification passes. Same server-side gates as the
+        # direct send path (send_worker.process_send_job): suppression list,
+        # 24h cooldown, per-domain cap, CAN-SPAM footer. This flow previously
+        # sent with only the do_not_contact flag checked, so a suppressed
+        # contact could still be emailed and footers went out missing.
         results = []
+
+        import os as _sudos
+        _cooldown_h = float(_sudos.environ.get("SEND_COOLDOWN_HOURS", "24"))
+        if _cooldown_h > 0:
+            _recent = await conn.fetchval(
+                """
+                SELECT count(*) FROM outreach_log
+                WHERE lead_id = $1
+                  AND channel = ANY($2::text[])
+                  AND delivery_status = 'sent'
+                  AND sent_at > NOW() - make_interval(hours => $3)
+                """,
+                lead_id,
+                [c for c in ("email", "whatsapp") if channel in (c, "both")],
+                _cooldown_h,
+            )
+            if _recent:
+                logger.warning(f"Verify-send blocked: lead {lead_id} reached in last {_cooldown_h}h (dedup)")
+                await publish_event(redis_client, requested_by, {
+                    "type": "send_blocked",
+                    "lead_id": str(lead_id),
+                    "reason": "cooldown",
+                    "timestamp": asyncio.get_event_loop().time(),
+                })
+                return
 
         # Keys resolve to the key-owning account on automated runs (see
         # utils/job_keys); user_id above still records who actually asked.
@@ -161,27 +194,43 @@ async def process_verify_and_send_job(
         if channel in ("email", "both") and email_status == "valid":
             email = lead["hr_email"] or lead["company_email"]
             if email:
-                subject = draft["subject"] if draft else f"Opportunity"
-                body = draft["body"] if draft else ""
-                result = await send_email(email, subject, body, email_api_key or "", from_email,
-                                            send_idempotency_key(str(lead_id), draft_id, "email"))
-                results.append({"channel": "email", **result})
-                await conn.execute(
-                    "INSERT INTO outreach_log (lead_id, draft_id, channel, sent_by, provider_message_id, delivery_status) VALUES ($1, $2, 'email', $3, $4, $5)",
-                    lead_id, draft_id if draft_id else None, user_id, result.get("provider_message_id"), result["status"],
-                )
+                if await _is_suppressed(conn, email, "email"):
+                    logger.warning(f"Verify-send blocked: {email} is suppressed/opted-out")
+                    results.append({"channel": "email", "status": "blocked", "reason": "suppressed"})
+                else:
+                    import os as _sdos
+                    _domain_cap = int(_sdos.environ.get("SEND_MAX_PER_DOMAIN_PER_DAY", "25") or 25)
+                    _domain = email_domain(email)
+                    _over_cap = _domain_cap > 0 and await domain_sent_count(conn, _domain) >= _domain_cap
+                    if _over_cap:
+                        logger.warning(f"Verify-send blocked: domain {_domain} hit daily cap ({_domain_cap})")
+                        results.append({"channel": "email", "status": "blocked", "reason": "domain_cap"})
+                    else:
+                        subject = draft["subject"] if draft else "Opportunity"
+                        body = (draft["body"] if draft else "") + await build_unsubscribe_footer(conn, email)
+                        result = await send_email(email, subject, body, email_api_key or "", from_email,
+                                                    send_idempotency_key(str(lead_id), draft_id, "email"))
+                        results.append({"channel": "email", **result})
+                        await conn.execute(
+                            "INSERT INTO outreach_log (lead_id, draft_id, channel, sent_by, provider_message_id, delivery_status) VALUES ($1, $2, 'email', $3, $4, $5)",
+                            lead_id, draft_id if draft_id else None, user_id, result.get("provider_message_id"), result["status"],
+                        )
 
         # Send WhatsApp if verified
         if channel in ("whatsapp", "both") and whatsapp_status == "registered":
             phone = lead["hr_mobile"] or lead["company_phone"]
             if phone:
-                message = draft["body"] if draft else ""
-                result = await send_whatsapp(phone, message)
-                results.append({"channel": "whatsapp", **result})
-                await conn.execute(
-                    "INSERT INTO outreach_log (lead_id, draft_id, channel, sent_by, provider_message_id, delivery_status) VALUES ($1, $2, 'whatsapp', $3, $4, $5)",
-                    lead_id, draft_id if draft_id else None, user_id, result.get("provider_message_id"), result["status"],
-                )
+                if await _is_suppressed(conn, phone, "whatsapp"):
+                    logger.warning(f"Verify-send blocked: phone is suppressed/opted-out")
+                    results.append({"channel": "whatsapp", "status": "blocked", "reason": "suppressed"})
+                else:
+                    message = draft["body"] if draft else ""
+                    result = await send_whatsapp(phone, message)
+                    results.append({"channel": "whatsapp", **result})
+                    await conn.execute(
+                        "INSERT INTO outreach_log (lead_id, draft_id, channel, sent_by, provider_message_id, delivery_status) VALUES ($1, $2, 'whatsapp', $3, $4, $5)",
+                        lead_id, draft_id if draft_id else None, user_id, result.get("provider_message_id"), result["status"],
+                    )
 
         # Update pipeline stage
         any_sent = any(r["status"] == "sent" for r in results)

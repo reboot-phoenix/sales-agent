@@ -33,6 +33,12 @@ export const SUPPORTED_API_KEY_FIELDS = [
   'reddit_client_secret',
   'telegram_api_id',
   'telegram_api_hash',
+  'hunter',
+  'apollo',
+  'lusha',
+  'rocketreach',
+  'prospeo',
+  'findymail',
 ] as const;
 
 const apiKeysSchema = z.object({
@@ -153,10 +159,46 @@ export const adminRoutes: FastifyPluginAsync = async (fastify) => {
     async (_req, reply) => {
       const workersUrl = process.env.WORKERS_URL || 'http://workers:8000';
       try {
-        const res = await fetch(`${workersUrl}/army/status`, { method: 'GET' });
+        // The worker gate requires the shared secret (same as /runs/army).
+        // Without it every poll 401s and the UI permanently reads "Idle".
+        const res = await fetch(`${workersUrl}/army/status`, {
+          method: 'GET',
+          headers: { 'x-worker-key': process.env.WORKER_API_SECRET || '' },
+        });
         return reply.send(await res.json());
       } catch (err) {
         return reply.status(502).send({ error: 'Worker status unreachable', detail: (err as Error).message });
+      }
+    },
+  );
+
+  fastify.post(
+    '/runs/army/stop',
+    { preValidation: [authorize(['admin'])] },
+    async (req, reply) => {
+      // Cooperative stop: in-flight sources cancel within seconds (finished
+      // work kept), queued scrape jobs are discarded, downstream queues drain.
+      const workersUrl = process.env.WORKERS_URL || 'http://workers:8000';
+      try {
+        const res = await fetch(`${workersUrl}/army/stop`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-worker-key': process.env.WORKER_API_SECRET || '',
+          },
+          body: JSON.stringify({}),
+        });
+        const data = await res.json();
+        await logAuditEvent({
+          user_id: (req.user as { id: string }).id,
+          action: 'stop_army',
+          resource_type: 'scrape_run',
+          resource_id: 'army',
+          details: (data as Record<string, unknown> | null) ?? null,
+        });
+        return reply.status(res.ok ? 200 : 502).send(data);
+      } catch (err) {
+        return reply.status(502).send({ error: 'Worker army stop unreachable', detail: (err as Error).message });
       }
     },
   );

@@ -50,6 +50,25 @@ const Header = ({ onMenuClick }: { onMenuClick?: () => void }) => {
 
   const runningCount = runs.filter((r) => !r.finished_at).length;
 
+  // Global live army status: every page shows whether the fleet is working.
+  const [armyQueued, setArmyQueued] = useState(0);
+  const [armyHalted, setArmyHalted] = useState(false);
+  useEffect(() => {
+    if (!user) return;
+    const fetchArmy = async () => {
+      try {
+        const s = (await admin.armyStatus()) as { raw?: number; enrichment?: number; verification?: number; draft?: number; halted?: boolean };
+        setArmyQueued((s.raw || 0) + (s.enrichment || 0) + (s.verification || 0) + (s.draft || 0));
+        setArmyHalted(!!s.halted);
+      } catch {
+        /* offline/degraded: keep last known state, never flash wrong status */
+      }
+    };
+    fetchArmy();
+    const interval = setInterval(fetchArmy, 5000);
+    return () => clearInterval(interval);
+  }, [user]);
+
   useEffect(() => {
     if (!user || !isAdmin) return;
     const fetchRuns = async () => {
@@ -101,6 +120,16 @@ const Header = ({ onMenuClick }: { onMenuClick?: () => void }) => {
       </div>
 
       <div className="ml-auto flex items-center gap-1.5">
+        <button
+          type="button"
+          onClick={() => navigate('/dashboard')}
+          title={armyQueued > 0 ? `${armyQueued} leads in flight — open dashboard for live queues` : armyHalted ? 'Army halted — open dashboard' : 'Army idle — open dashboard'}
+          aria-label={armyQueued > 0 ? `Army running, ${armyQueued} leads in flight` : 'Army idle'}
+          className={`hidden items-center gap-1.5 rounded-full border px-2.5 py-1.5 text-[11px] font-semibold transition-colors sm:inline-flex ${armyQueued > 0 ? 'border-success/40 bg-success-soft text-success' : 'border-border text-muted-foreground hover:text-foreground'}`}
+        >
+          <span className={`h-1.5 w-1.5 rounded-full ${armyQueued > 0 ? 'animate-pulse bg-success' : 'bg-muted-foreground'}`} />
+          {armyQueued > 0 ? `${armyQueued} running` : armyHalted ? 'Halted' : 'Idle'}
+        </button>
         <button
           type="button"
           onClick={() => window.dispatchEvent(new Event('hiregen:open-palette'))}

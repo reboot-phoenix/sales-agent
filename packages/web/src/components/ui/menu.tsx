@@ -84,7 +84,7 @@ export function Menu({ trigger, items, align = "start", triggerClassName, panelC
           ref={panelRef}
           role="menu"
           style={{ position: "fixed", top: pos.top, left: pos.left }}
-          className={cn("z-dropdown min-w-[190px] max-w-[calc(100vw-16px)] overflow-hidden rounded-xl border border-border bg-surface/95 p-1 shadow-card backdrop-blur-xl animate-scale-in", panelClassName)}
+          className={cn("z-dropdown min-w-[190px] max-w-[calc(100vw-16px)] overflow-hidden rounded-2xl border border-border bg-surface/95 p-1.5 shadow-card backdrop-blur-xl animate-scale-in", panelClassName)}
         >
           {items.map((it, i) => (
             <React.Fragment key={i}>

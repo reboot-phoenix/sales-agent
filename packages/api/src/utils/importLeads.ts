@@ -801,8 +801,13 @@ async function upsertOne(sql: postgres.Sql, input: UpsertInput): Promise<UpsertO
        (company_id, hr_contact_id, title, description, experience_level, salary_range,
         job_url, source_site, fingerprint, raw_payload, location, city, state, country,
         location_type, employment_type, is_work_from_home, apply_url, posted_at, about_job,
-        department, openings_count, salary_min, salary_max, salary_currency, salary_period)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26)
+        department, openings_count, salary_min, salary_max, salary_currency, salary_period,
+        freshness_category)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,
+       CASE WHEN $19::timestamptz > NOW() - INTERVAL '24 hours' THEN 'fresh'
+            WHEN $19::timestamptz > NOW() - INTERVAL '7 days' THEN 'recent'
+            WHEN $19::timestamptz IS NULL THEN 'unknown'
+            ELSE 'older' END)
      ON CONFLICT (fingerprint) DO NOTHING
      RETURNING id`,
     [
@@ -896,6 +901,10 @@ async function mergeIntoPosting(
        is_work_from_home= COALESCE(is_work_from_home, $10),
        apply_url        = COALESCE(apply_url, $11),
        posted_at        = COALESCE(posted_at, $12),
+       freshness_category = CASE WHEN COALESCE(posted_at, $12)::timestamptz > NOW() - INTERVAL '24 hours' THEN 'fresh'
+            WHEN COALESCE(posted_at, $12)::timestamptz > NOW() - INTERVAL '7 days' THEN 'recent'
+            WHEN COALESCE(posted_at, $12)::timestamptz IS NULL THEN 'unknown'
+            ELSE 'older' END,
        about_job        = COALESCE(about_job, $13),
        department       = COALESCE(department, $14),
        openings_count   = COALESCE(openings_count, $15),

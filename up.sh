@@ -15,12 +15,16 @@ echo "==> Building images & starting stack (postgres, redis, api, web, workers, 
 docker compose up -d --build
 
 echo "==> Applying database migrations (idempotent; waits for postgres)..."
+migrated=0
 for i in $(seq 1 20); do
   if docker compose exec -T api npm run --silent migrate 2>/dev/null; then
-    echo "    migrations applied"; break
+    echo "    migrations applied"; migrated=1; break
   fi
   echo "    db/api not ready yet, retrying ($i/20)..."; sleep 3
 done
+if [ "$migrated" -ne 1 ]; then
+  echo "migrations FAILED" >&2; exit 1
+fi
 
 echo "==> Bootstrapping admin account (idempotent, reads ADMIN_EMAIL/ADMIN_PASSWORD from .env)..."
 for i in $(seq 1 10); do

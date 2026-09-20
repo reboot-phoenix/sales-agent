@@ -19,6 +19,8 @@ const loc = (r: any) => [r.city, r.state, r.country].filter(Boolean).join(', ') 
 
 export const LEAD_COLUMNS: LeadColumn[] = [
   { header: 'Score', field: 'lead_score', group: 'Identity', get: (r) => r.lead_score },
+  { header: 'Score (1-10)', field: 'score_10', group: 'Identity', get: (r) => r.score_10 ?? '' },
+  { header: 'Freshness', field: 'freshness_category', group: 'Identity', get: (r) => r.freshness_category || '' },
   { header: 'Band', field: 'score_band', group: 'Identity', get: (r) => r.score_band },
   { header: 'Lead ID', field: 'id', group: 'Identity', get: (r) => r.id },
   { header: 'Pipeline Stage', field: 'pipeline_stage', group: 'Identity', get: (r) => r.pipeline_stage },

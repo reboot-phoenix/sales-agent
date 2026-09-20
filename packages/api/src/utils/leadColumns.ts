@@ -19,6 +19,17 @@ export const LEAD_SELECT_SQL = `
         l.claimed_by, l.claimed_at,
         l.legal_basis, l.processing_purpose, l.provenance, l.possible_duplicate_of,
         l.created_at, l.updated_at,
+        -- Product scale 1–10 derived from canonical 0–100 (no rescale migration;
+        -- engine, weights and hot>=70/warm>=40 bands stay untouched).
+        GREATEST(1, LEAST(10, ROUND(l.lead_score / 10.0))) AS score_10,
+        -- Stored freshness label (writers set it at insert/merge, the daily
+        -- scheduler reclassifies aging rows; migration 012). Falls back to a
+        -- live computation for rows predating the backfill.
+        COALESCE(jp.freshness_category,
+          CASE WHEN COALESCE(jp.posted_at, l.created_at) IS NULL THEN 'unknown'
+               WHEN COALESCE(jp.posted_at, l.created_at) > NOW() - INTERVAL '24 hours' THEN 'fresh'
+               WHEN COALESCE(jp.posted_at, l.created_at) > NOW() - INTERVAL '7 days' THEN 'recent'
+               ELSE 'older' END) AS freshness_category,
         jp.source_site, jp.title AS job_title,
         -- The table renders location / salary / experience per row; these were
         -- never selected, so every cell fell back to a placeholder.
@@ -64,6 +75,8 @@ export const LOCATION_GROUP = 'Location & terms';
 export const LEAD_EXPORT_COLUMNS: ExportColumn[] = [
   // Identity
   { header: 'Score', field: 'lead_score', group: 'Identity', get: (r) => r.lead_score, type: 'Number', width: 8 },
+  { header: 'Score (1-10)', field: 'score_10', group: 'Identity', get: (r) => r.score_10 ?? '', type: 'Number', width: 12 },
+  { header: 'Freshness', field: 'freshness_category', group: 'Identity', get: (r) => r.freshness_category || '', width: 10 },
   { header: 'Band', field: 'score_band', group: 'Identity', get: (r) => r.score_band, width: 10 },
   { header: 'Lead ID', field: 'id', group: 'Identity', get: (r) => r.id, width: 36 },
   { header: 'Pipeline Stage', field: 'pipeline_stage', group: 'Identity', get: (r) => r.pipeline_stage, width: 18 },

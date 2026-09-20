@@ -39,7 +39,9 @@ const FAILURE_ENTRY: Record<string, string[]> = {
 
 const RECOVERY: Record<string, string[]> = {
   enrichment_failed: ['enriching', 'enriched', 'retry_pending'],
-  verification_failed: ['verifying', 'verified', 'retry_pending'],
+  // 'enriching' recovery mirrors functions.sql (verification_failed may re-enter
+  // enrichment when no usable contact remains).
+  verification_failed: ['verifying', 'verified', 'retry_pending', 'enriching'],
   contact_unavailable: ['enriching', 'enriched'],
   send_failed: ['retry_pending', 'send_pending', 'drafted'],
   provider_error: ['retry_pending', 'send_pending', 'drafted'],

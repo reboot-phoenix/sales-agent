@@ -256,6 +256,7 @@ const Companies: React.FC = () => {
   return (
     <div className="space-y-4">
       <PageHeader
+        eyebrow="Workspace"
         title="Companies"
         description="Track the companies you're targeting"
         actions={

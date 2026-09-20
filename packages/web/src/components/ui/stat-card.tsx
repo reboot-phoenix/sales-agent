@@ -117,5 +117,7 @@ export function StatCardGrid({
   loading?: boolean
   children: React.ReactNode
 }) {
-  return <div className="grid grid-cols-2 gap-phi3 lg:grid-cols-4 xl:grid-cols-5">{loading ? Array.from({ length: 5 }).map((_, i) => <StatCardSkeleton key={i} />) : children}</div>
+  // Auto-fit: 5 cards (Dashboard) and 6 cards (Analytics) both fill the row
+  // with no orphans, and narrow screens wrap to 2 columns without overflow.
+  return <div className="grid grid-cols-2 gap-phi3 md:grid-cols-3 xl:grid-cols-[repeat(auto-fit,minmax(170px,1fr))]">{loading ? Array.from({ length: 5 }).map((_, i) => <StatCardSkeleton key={i} />) : children}</div>
 }

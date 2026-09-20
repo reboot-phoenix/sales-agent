@@ -58,12 +58,12 @@ def _get_cache() -> sqlite3.Connection:
     return conn
 
 
-def cache_get(company: str) -> dict[str, Any] | None:
+def cache_get(company: str, domain: str = "") -> dict[str, Any] | None:
     try:
         conn = _get_cache()
         row = conn.execute(
             "SELECT hr_name, hr_email, hr_linkedin, source, confidence, raw FROM hr_cache WHERE company = ?",
-            (company.lower(),),
+            (_cache_key(company, domain),),
         ).fetchone()
         conn.close()
         if row:
@@ -80,14 +80,14 @@ def cache_get(company: str) -> dict[str, Any] | None:
     return None
 
 
-def cache_set(company: str, data: dict[str, Any]) -> None:
+def cache_set(company: str, data: dict[str, Any], domain: str = "") -> None:
     try:
         conn = _get_cache()
         conn.execute(
             """INSERT OR REPLACE INTO hr_cache (company, hr_name, hr_email, hr_linkedin, source, confidence, raw, extracted_at)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
             (
-                company.lower(),
+                _cache_key(company, domain),
                 data.get("hr_name", ""),
                 data.get("hr_email", ""),
                 data.get("hr_linkedin", ""),
@@ -188,6 +188,54 @@ KNOWN_HR_NAMES = {
     "amy gaulton", "rachel kim", "christopher macleod",
     "alex weinhardt", "sanyam matta",
 }
+
+# Generic tokens dropped when matching company names to email domains.
+_GENERIC_COMPANY_WORDS = frozenset({
+    "inc", "llc", "ltd", "co", "corp", "corporation", "company",
+    "group", "technologies", "technology", "tech", "labs", "lab",
+    "systems", "system", "solutions", "solution", "services",
+    "partners", "associates", "enterprises", "holdings", "global",
+    "international", "the", "and",
+})
+
+
+def _email_domain_matches_company(email: str, company: str, domain: str) -> bool:
+    """Return True when the snippet email plausibly belongs to the target company.
+
+    C2: dork snippets routinely surface recruiter/agency emails from unrelated
+    employers. Accept the snippet email only when its domain matches the
+    expected company domain, or carries the company slug / a significant
+    company token. LinkedIn/RocketReach profile hits without an email are
+    still kept (name/linkedin only) by the caller.
+    """
+    try:
+        email_domain = email.split("@", 1)[1].lower().strip().strip(".,;:)]}'\"")
+    except (IndexError, AttributeError):
+        return False
+    if not email_domain or "." not in email_domain:
+        return False
+    expected = (domain or "").lower().strip()
+    expected = re.sub(r"^https?://", "", expected)
+    expected = re.sub(r"^www\.", "", expected).split("/")[0].strip()
+    if expected and "." in expected and email_domain == expected:
+        return True
+    slug = (company or "").lower().strip().replace(" ", "")
+    if slug and slug in email_domain.replace(".", ""):
+        return True
+    sld = email_domain.split(".")[0]
+    if slug and sld and (sld in slug or slug in sld) and len(sld) >= 3:
+        return True
+    tokens = [t for t in re.split(r"[^a-z0-9]+", (company or "").lower()) if t]
+    for tok in tokens:
+        if len(tok) >= 4 and tok not in _GENERIC_COMPANY_WORDS and tok in email_domain:
+            return True
+    return False
+
+
+# NOTE: cache keys are scoped by company+domain (e.g. "acme co|acme.com") so
+# "Acme Co" vs "Acme Interiors" (same name prefix, different domains) never collide.
+def _cache_key(company: str, domain: str = "") -> str:
+    return f"{(company or '').lower()}|{(domain or '').lower()}"
 
 
 def is_valid_person_name(name: str) -> bool:
@@ -544,7 +592,7 @@ async def _extract_from_pages(session: aiohttp.ClientSession, domain: str, compa
 # Strategy 3: DuckDuckGo dorking (cached)
 # ---------------------------------------------------------------------------
 async def _extract_via_dork(session: aiohttp.ClientSession, company: str, domain: str) -> dict[str, Any]:
-    cached = cache_get(f"dork:{company}")
+    cached = cache_get(f"dork:{company}", domain)
     if cached and cached.get("hr_name"):
         return cached
 
@@ -608,12 +656,20 @@ async def _extract_via_dork(session: aiohttp.ClientSession, company: str, domain
                                 candidate["source"] = "duckduckgo_linkedin"
                                 candidate["confidence"] = 0.75
 
-                # Email from snippet
+                # Email from snippet — C2 domain corroboration: reject the
+                # snippet email unless its domain plausibly belongs to the
+                # target company (exact expected domain, company slug, or a
+                # significant company token in the domain). Unmatched emails
+                # are dropped; name/linkedin are kept at capped confidence.
                 email_match = re.search(r'[\w.]+@[\w.-]+\.\w+', snippet)
                 if email_match:
                     email = email_match.group(0).lower()
                     if is_valid_email(email):
-                        candidate["hr_email"] = email
+                        if _email_domain_matches_company(email, company, domain):
+                            candidate["hr_email"] = email
+                        else:
+                            # Keep name/linkedin if present but cap confidence.
+                            candidate["confidence"] = min(candidate.get("confidence", 0.0) or 0.0, 0.5)
                         lp = email.split("@")[0]
                         candidates = []
                         if "." in lp:
@@ -654,7 +710,7 @@ async def _extract_via_dork(session: aiohttp.ClientSession, company: str, domain
                 # Early exit if we found a candidate with both name and email
                 for c in qr:
                     if c.get("hr_name") and c.get("hr_email") and c.get("confidence", 0) >= 0.65:
-                        cache_set(f"dork:{company}", c)
+                        cache_set(f"dork:{company}", c, domain)
                         return c
 
     except ImportError:
@@ -743,8 +799,12 @@ async def _extract_via_dork(session: aiohttp.ClientSession, company: str, domain
             if c.get("confidence", 0) > best.get("confidence", 0):
                 best = c
 
+    if best.get("hr_email") and not _email_domain_matches_company(best["hr_email"], company, domain):
+        # C2: drop non-corroborated snippet emails; keep name/linkedin capped.
+        best["hr_email"] = ""
+        best["confidence"] = min(best.get("confidence", 0.0) or 0.0, 0.5)
     if best.get("hr_name") or best.get("hr_email") or best.get("hr_linkedin"):
-        cache_set(f"dork:{company}", best)
+        cache_set(f"dork:{company}", best, domain)
         return best
 
     return {"hr_name": "", "hr_email": "", "hr_linkedin": "", "source": "", "confidence": 0.0}
@@ -753,10 +813,10 @@ async def _extract_via_dork(session: aiohttp.ClientSession, company: str, domain
 # ---------------------------------------------------------------------------
 # Strategy 4: WHOIS fallback
 # ---------------------------------------------------------------------------
-async def _extract_via_whois(company: str) -> dict[str, Any]:
+async def _extract_via_whois(company: str, domain: str = "") -> dict[str, Any]:
     result: dict[str, Any] = {"hr_name": "", "hr_email": "", "hr_linkedin": "", "source": "", "confidence": 0.0}
 
-    cached = cache_get(f"whois:{company}")
+    cached = cache_get(f"whois:{company}", domain)
     if cached:
         return cached
 
@@ -776,14 +836,14 @@ async def _extract_via_whois(company: str) -> dict[str, Any]:
                     result["hr_email"] = str(email).lower()
                     result["source"] = "whois"
                     result["confidence"] = 0.3
-                    cache_set(f"whois:{company}", result)
+                    cache_set(f"whois:{company}", result, domain)
                     return result
         except Exception:
             pass
     except ImportError:
         pass
 
-    cache_set(f"whois:{company}", result)
+    cache_set(f"whois:{company}", result, domain)
     return result
 
 
@@ -804,7 +864,7 @@ async def extract_hr_for_company(company: str, domain: str, job_url: str = "") -
     All strategies run; best result wins. Name + email are combined across strategies.
     """
     # Check cache first
-    cached = cache_get(company)
+    cached = cache_get(company, domain)
     if cached and (cached.get("hr_name") or cached.get("hr_email")):
         return cached
 
@@ -890,7 +950,7 @@ async def extract_hr_for_company(company: str, domain: str, job_url: str = "") -
     if not has_any_raw_result:
         try:
             whois_result = await asyncio.wait_for(
-                _extract_via_whois(company),
+                _extract_via_whois(company, domain),
                 timeout=5,
             )
             if whois_result and whois_result.get("hr_email"):
@@ -953,5 +1013,5 @@ async def extract_hr_for_company(company: str, domain: str, job_url: str = "") -
     result["source"] = best_source
     result["confidence"] = best_confidence
 
-    cache_set(company, result)
+    cache_set(company, result, domain)
     return result

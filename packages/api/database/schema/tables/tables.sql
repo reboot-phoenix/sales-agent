@@ -112,6 +112,11 @@ CREATE TABLE IF NOT EXISTS job_postings (
   is_work_from_home BOOLEAN DEFAULT false,
   apply_url TEXT,
   posted_at TIMESTAMPTZ,
+  -- Stored freshness label (fresh <24h / recent <7d / older / unknown).
+  -- Plain column, NOT GENERATED: Postgres forbids NOW() (non-immutable) in
+  -- generated expressions. Writers set it at insert/merge; the daily scheduler
+  -- reclassifies aging rows. Reads stay a cheap indexed equality.
+  freshness_category TEXT NOT NULL DEFAULT 'unknown',
   about_job TEXT,
   department TEXT,
   openings_count INTEGER,
