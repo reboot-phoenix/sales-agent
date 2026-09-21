@@ -136,7 +136,12 @@ export const outreachRoutes: FastifyPluginAsync = async (fastify) => {
       const perDomain: OutreachAssessment[] = [];
       const meta = new Map<string, Record<string, any>>();
       for (const domain of domains) {
-        const conditions: string[] = ['t.is_active IS NOT FALSE'];
+        const alias = domain === 'jobs' ? 'l' : domain === 'hackathons' ? 'h' : 'c';
+        const conditions: string[] = [
+          domain === 'jobs'
+            ? 'l.do_not_contact IS NOT TRUE'
+            : `${alias}.is_active IS NOT FALSE`
+        ];
         const values: unknown[] = [];
         const add = (template: string, ...vals: unknown[]) => {
           let text = template;
