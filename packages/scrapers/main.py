@@ -279,6 +279,254 @@ async def army_run(req: ScrapeRequest, _auth: bool = Depends(require_worker_key)
     return {"message": "Army run queued", "run_id": run_id, "sweep_reenqueued": swept}
 
 
+class ArmyDomainRequest(BaseModel):
+    sources: Optional[list[str]] = None
+    run_type: str = "manual"
+    triggered_by: Optional[str] = None
+
+
+@app.post("/armies/{domain}/run")
+async def army_domain_run(domain: str, req: ArmyDomainRequest, _auth: bool = Depends(require_worker_key)):
+    """Start one army (jobs | hackathons | colleges) as a background run.
+
+    Returns immediately with the army run id; progress is read from army_runs.
+    The browser is never held open by the run itself.
+    """
+    from scrapers.domains.armies import DOMAINS, create_run, enqueue_army
+    if domain not in DOMAINS:
+        raise HTTPException(404, f"unknown army domain: {domain}")
+    run_id = await create_run(_db_pool, domain, req.run_type, req.triggered_by)
+    await enqueue_army(
+        get_redis(), domain, run_type=req.run_type,
+        triggered_by=req.triggered_by, run_id=run_id, sources=req.sources,
+    )
+    return {"message": f"{domain} army queued", "run_id": run_id, "domain": domain}
+
+
+@app.post("/armies/run-all")
+async def army_run_all(req: ArmyDomainRequest, _auth: bool = Depends(require_worker_key)):
+    """Queue all three armies together (they run concurrently)."""
+    from scrapers.domains.armies import DOMAINS, create_run, enqueue_army
+    redis_client = get_redis()
+    run_ids: dict[str, str | None] = {}
+    for domain in DOMAINS:
+        run_id = await create_run(_db_pool, domain, req.run_type, req.triggered_by)
+        await enqueue_army(redis_client, domain, run_type=req.run_type,
+                           triggered_by=req.triggered_by, run_id=run_id, sources=req.sources)
+        run_ids[domain] = run_id
+    return {"message": "all armies queued", "run_ids": run_ids}
+
+
+@app.get("/armies/runs")
+async def army_runs(limit: int = 25, domain: Optional[str] = None,
+                    _auth: bool = Depends(require_worker_key)):
+    """Recent army runs (newest first), optionally filtered by domain."""
+    if _db_pool is None:
+        raise HTTPException(503, "database unavailable")
+    async with _db_pool.acquire() as conn:
+        if domain:
+            rows = await conn.fetch(
+                "SELECT * FROM army_runs WHERE domain=$1 ORDER BY started_at DESC LIMIT $2",
+                domain, min(max(limit, 1), 200),
+            )
+        else:
+            rows = await conn.fetch(
+                "SELECT * FROM army_runs ORDER BY started_at DESC LIMIT $1", min(max(limit, 1), 200)
+            )
+    return {"runs": [dict(r) for r in rows]}
+
+
+@app.get("/armies/runs/{run_id}")
+async def army_run_detail(run_id: str, _auth: bool = Depends(require_worker_key)):
+    if _db_pool is None:
+        raise HTTPException(503, "database unavailable")
+    async with _db_pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT * FROM army_runs WHERE id=$1", run_id)
+        if row is None:
+            raise HTTPException(404, "run not found")
+        errors = await conn.fetch(
+            "SELECT source, error, attempt, created_at FROM scraper_errors WHERE run_id=$1 ORDER BY created_at DESC LIMIT 50",
+            run_id,
+        )
+        pending_raw = await conn.fetchval(
+            "SELECT COUNT(*) FROM raw_discovery_records WHERE domain=$1 AND status IN ('stored','processing','failed')",
+            {"jobs": "jobs", "hackathons": "hackathons", "colleges": "colleges"}.get(row["domain"], row["domain"]),
+        )
+    return {"run": dict(row), "errors": [dict(e) for e in errors], "pending_raw": pending_raw}
+
+
+@app.get("/armies/sources")
+async def army_sources(domain: Optional[str] = None, _auth: bool = Depends(require_worker_key)):
+    """Source registry with health, so operators can see which adapter is down."""
+    if _db_pool is None:
+        raise HTTPException(503, "database unavailable")
+    async with _db_pool.acquire() as conn:
+        if domain:
+            rows = await conn.fetch(
+                "SELECT * FROM scraper_sources WHERE domain=$1 ORDER BY domain, name", domain)
+        else:
+            rows = await conn.fetch("SELECT * FROM scraper_sources ORDER BY domain, name")
+    return {"sources": [dict(r) for r in rows]}
+
+
+class EnrichEntityRequest(BaseModel):
+    triggered_by: Optional[str] = None
+    fetch_pages: bool = True
+
+
+@app.post("/intelligence/colleges/{college_id}/enrich")
+async def enrich_college_endpoint(college_id: str, req: EnrichEntityRequest,
+                                  _auth: bool = Depends(require_worker_key)):
+    """Run the college contact-enrichment cascade (TPO/principal/placement) now."""
+    if _db_pool is None:
+        raise HTTPException(503, "database unavailable")
+    import uuid as _uuid
+    try:
+        _uuid.UUID(college_id)
+    except ValueError:
+        raise HTTPException(400, "invalid college id")
+    from scrapers.domains.colleges.enrichment import enrich_college
+
+    async def _run():
+        async with _db_pool.acquire() as conn:
+            try:
+                result = await enrich_college(conn, college_id, fetch_pages=req.fetch_pages)
+                logger.info(f"College enrichment finished for {college_id}: {result.get('status')}")
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"College enrichment failed for {college_id}: {e}")
+
+    asyncio.create_task(_run())
+    return {"message": "college enrichment started", "college_id": college_id}
+
+
+@app.post("/intelligence/hackathons/{hackathon_id}/enrich")
+async def enrich_hackathon_endpoint(hackathon_id: str, req: EnrichEntityRequest,
+                                    _auth: bool = Depends(require_worker_key)):
+    if _db_pool is None:
+        raise HTTPException(503, "database unavailable")
+    import uuid as _uuid
+    try:
+        _uuid.UUID(hackathon_id)
+    except ValueError:
+        raise HTTPException(400, "invalid hackathon id")
+    from scrapers.domains.hackathons.worker import enrich_hackathon_by_id
+
+    async def _run():
+        async with _db_pool.acquire() as conn:
+            try:
+                await enrich_hackathon_by_id(conn, hackathon_id, fetch_pages=req.fetch_pages)
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"Hackathon enrichment failed for {hackathon_id}: {e}")
+
+    asyncio.create_task(_run())
+    return {"message": "hackathon enrichment started", "hackathon_id": hackathon_id}
+
+
+class ReassessRequest(BaseModel):
+    domain: str
+    id: str
+    verify_emails: bool = True
+
+
+@app.post("/outreach/reassess")
+async def outreach_reassess_endpoint(req: ReassessRequest,
+                                    _auth: bool = Depends(require_worker_key)):
+    """Re-check a lead's contacts and re-score it, right now.
+
+    Two things happen and both are reported: deliverability is re-checked for the
+    stored addresses (mailboxes change), and the outreach score/readiness is
+    recomputed from the stored contacts. Nothing is guessed - if a check cannot
+    complete, the previous verdict is left in place rather than being cleared.
+    """
+    if _db_pool is None:
+        raise HTTPException(503, "database unavailable")
+    import uuid as _uuid
+
+    if req.domain not in ("jobs", "hackathons", "colleges"):
+        raise HTTPException(400, f"unknown domain: {req.domain}")
+    try:
+        _uuid.UUID(req.id)
+    except ValueError:
+        raise HTTPException(400, "invalid entity id")
+    if req.domain == "jobs":
+        # Job leads are scored by the API from live rows; the worker has no job
+        # contact verifier wired to the same chain, so say so instead of pretending.
+        raise HTTPException(501, "job-lead reassessment is served by the API (GET /outreach/jobs/:id)")
+
+    from scrapers.domains.verification import verify_contact_emails
+
+    async with _db_pool.acquire() as conn:
+        verification_stats: dict = {}
+        if req.verify_emails:
+            try:
+                verification_stats = await verify_contact_emails(conn, req.domain, req.id)
+            except Exception as e:  # noqa: BLE001 - a failed check must not 500 the caller
+                logger.warning(f"Reassessment verification failed for {req.domain}/{req.id}: {e}")
+                verification_stats = {"error": str(e)[:200]}
+        if req.domain == "colleges":
+            from scrapers.domains.colleges.enrichment import recompute_college_quality
+            quality = await recompute_college_quality(conn, req.id)
+        else:
+            from scrapers.domains.hackathons.worker import recompute_hackathon_quality
+            quality = await recompute_hackathon_quality(conn, req.id)
+    return {
+        "domain": req.domain,
+        "id": req.id,
+        "verification": verification_stats,
+        "quality": quality,
+        "reassessed_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+@app.get("/providers")
+async def providers_endpoint(_auth: bool = Depends(require_worker_key)):
+    """Which contact providers exist, which are implemented, and which are keyed.
+
+    Visible on purpose: an operator should be able to see that paid enrichment is
+    *not* configured instead of assuming the cascade is trying harder than it is.
+    """
+    from scrapers.domains.providers import configured_providers, provider_status
+    return {
+        "configured": configured_providers(),
+        "implemented": [name for name, spec in provider_status().items() if spec["implemented"]],
+        "providers": provider_status(),
+    }
+
+
+class ReenrichRequest(BaseModel):
+    limit: int = 25
+    fetch_pages: bool = True
+
+
+@app.post("/intelligence/{domain}/reenrich")
+async def reenrich_endpoint(domain: str, req: ReenrichRequest,
+                            _auth: bool = Depends(require_worker_key)):
+    """Re-enrich the highest-value contactless records right now.
+
+    Same sweep the nightly maintenance pass runs — bounded, cooldown-limited and
+    per-entity isolated — exposed so an operator does not have to wait until 02:00.
+    """
+    from scrapers.domains.reenrich import DOMAIN_TABLES
+    if domain not in DOMAIN_TABLES:
+        raise HTTPException(404, f"unknown domain: {domain}")
+    if _db_pool is None:
+        raise HTTPException(503, "database unavailable")
+    from scrapers.domains.reenrich import run_reenrichment_sweep
+
+    async def _run():
+        async with _db_pool.acquire() as conn:
+            try:
+                report = await run_reenrichment_sweep(
+                    conn, domain, limit=req.limit, fetch_pages=req.fetch_pages
+                )
+                logger.info(f"On-demand re-enrichment {domain}: {report}")
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"On-demand re-enrichment failed for {domain}: {e}")
+
+    asyncio.create_task(_run())
+    return {"message": f"{domain} re-enrichment started", "domain": domain, "limit": req.limit}
+
+
 async def periodic_sweeps(redis_client, db_pool, interval: int | None = None) -> None:
     """Hourly self-healing: re-enrich still-contactless leads, re-verify still-
     unverified contacts. Without this, a lead that fails OSINT right after the
@@ -315,7 +563,8 @@ async def start_consumers():
     from scrapers.draft_worker import consume_draft_queue
     from scrapers.send_worker import consume_send_queue
     from scrapers.verify_send_worker import consume_verify_send_queue
-    from scrapers.scheduler import daily_scrape_scheduler
+    from scrapers.scheduler import daily_scrape_scheduler, daily_army_scheduler
+    from scrapers.domains.armies import consume_army_queue, reclaim_stalled_raw
 
     redis_client = get_redis()
 
@@ -377,6 +626,19 @@ async def start_consumers():
         tasks.append(asyncio.create_task(run_normalizer(redis_client, db_pool)))
         # daily full-fleet heartbeat (India jobs -> enrich -> verify -> draft -> send)
         tasks.append(asyncio.create_task(daily_scrape_scheduler(redis_client, db_pool=db_pool)))
+        # Hackathon + College intelligence armies: durable raw reclaim at boot,
+        # then N consumers so the three-army schedule runs concurrently.
+        if db_pool:
+            try:
+                reclaimed_raw = await reclaim_stalled_raw(db_pool)
+                if reclaimed_raw:
+                    logger.info(f"Raw reclaim at boot: {reclaimed_raw} stalled discovery rows")
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"raw reclaim failed (runs still proceed): {e}")
+        _army_n = max(1, int(os.environ.get("ARMY_CONCURRENCY", "4") or 4))
+        for _ in range(_army_n):
+            tasks.append(asyncio.create_task(consume_army_queue(redis_client, db_pool)))
+        tasks.append(asyncio.create_task(daily_army_scheduler(redis_client, db_pool=db_pool)))
 
         if db_pool:
             # Contact enrichment is the product priority, but the keyless OSINT

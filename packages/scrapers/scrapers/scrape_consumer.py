@@ -338,6 +338,28 @@ async def consume_scrape_queue(
                             "stopped": stopped,
                         }),
                     )
+                    # Link the jobs army run (if this scrape was an army trigger)
+                    # to the scrape results so /armies/runs shows live counters.
+                    army_run_id = job.get("army_run_id")
+                    if army_run_id:
+                        try:
+                            await conn.execute(
+                                """UPDATE army_runs SET
+                                     status=$2, finished_at=NOW(),
+                                     sources_attempted=$3, sources_succeeded=$4,
+                                     records_discovered=$5, errors_count=$6,
+                                     checkpoint=$7::jsonb, worker_status=$8::jsonb,
+                                     updated_at=NOW()
+                                   WHERE id=$1""",
+                                str(army_run_id),
+                                "partial" if stopped else "completed",
+                                results["sources_attempted"], results["sources_succeeded"],
+                                results["leads_found"], len(results["sources_failed"]),
+                                json.dumps({"stage": "scrape_complete", "scrape_run_id": run_id}),
+                                json.dumps(per_source_counts),
+                            )
+                        except Exception as ae:  # noqa: BLE001
+                            logger.debug(f"army_runs update skipped: {ae}")
 
             processed += 1
             await ack(redis_client, "scrape_queue:requests", raw_msg)

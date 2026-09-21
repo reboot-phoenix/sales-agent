@@ -30,6 +30,7 @@ import {
   AlertTriangle,
 } from 'lucide-react';
 import { formatDateTime } from '@/lib/format';
+import DomainInsights from '@/components/analytics/DomainInsights';
 
 const STAGE_LABELS: Record<string, string> = {
   discovered: 'Discovered', enriching: 'Enriching', enriched: 'Enriched',
@@ -354,6 +355,10 @@ const Analytics: React.FC = () => {
           </CardContent>
         </Card>
       )}
+
+      {/* Jobs, hackathons, colleges and the scraper fleet — one tab per domain so
+          the figures below are never mixed into a single meaningless total. */}
+      <DomainInsights />
 
       <Card>
         <CardHeader>

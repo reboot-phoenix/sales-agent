@@ -3,7 +3,8 @@ import { NavLink, useNavigate } from "react-router-dom";
 import { useAuthStore } from "@/stores/auth";
 import {
   LayoutDashboard, Users, Building2, Contact, GitMerge, TrendingUp,
-  Settings as SettingsIcon, LogOut, Search, PanelLeft, Radar,
+  Settings as SettingsIcon, LogOut, Search, PanelLeft, Radar, Trophy,
+  GraduationCap, ServerCog, Send,
 } from "lucide-react";
 import { Logo } from "@/components/Logo";
 import { cn } from "@/components/ui/cn";
@@ -13,7 +14,10 @@ type IconType = typeof Users;
 const SECTIONS: { label: string; items: { to: string; label: string; icon: IconType }[] }[] = [
   { label: "Workspace", items: [
     { to: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
-    { to: "/leads", label: "Leads", icon: Users },
+    { to: "/leads", label: "Job Leads", icon: Users },
+    { to: "/hackathons", label: "Hackathons", icon: Trophy },
+    { to: "/colleges", label: "Colleges", icon: GraduationCap },
+    { to: "/outreach", label: "Outreach", icon: Send },
     { to: "/my-leads", label: "My Leads", icon: Users },
     { to: "/companies", label: "Companies", icon: Building2 },
     { to: "/contacts", label: "HR Contacts", icon: Contact },
@@ -71,6 +75,7 @@ function Nav({ collapsed, isAdmin, onNavigate }: { collapsed: boolean; isAdmin: 
         <div>
           {!collapsed && <p className="px-2.5 pb-1 pt-3 text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground/60">System</p>}
           {collapsed && <div className="mx-1 my-1.5 h-px bg-sidebar-border" />}
+          <NavItem to="/armies" label="Scraper Armies" icon={ServerCog} collapsed={collapsed} onNavigate={onNavigate} />
           <NavItem to="/settings" label="Settings" icon={SettingsIcon} collapsed={collapsed} onNavigate={onNavigate} />
         </div>
       )}

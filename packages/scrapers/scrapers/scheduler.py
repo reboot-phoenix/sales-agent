@@ -30,6 +30,13 @@ _HOUR = int(os.environ.get("DAILY_SCRAPE_HOUR", "3"))
 _MINUTE = int(os.environ.get("DAILY_SCRAPE_MINUTE", "0"))
 _CATCHUP_AT_BOOT = os.environ.get("DAILY_SCRAPE_CATCHUP", "0") == "1"
 
+# Unified three-army heartbeat at 02:00 LOCAL time. When enabled (default) it owns
+# the daily job discovery too, so the legacy scheduler below stops enqueuing a
+# second job scrape and only performs its maintenance work (sweeps/retention).
+_ARMY_ENABLED = os.environ.get("ENABLE_ARMY_SCHEDULER", "1") != "0"
+_ARMY_HOUR = int(os.environ.get("DAILY_ARMY_HOUR", "2"))
+_ARMY_MINUTE = int(os.environ.get("DAILY_ARMY_MINUTE", "0"))
+
 # Source toggles (Settings UI -> settings.sources_enabled): the daily fleet and
 # manual army runs skip disabled sources. Unset/empty -> all defaults.
 async def load_enabled_sources(db_pool) -> list[str] | None:
@@ -291,6 +298,81 @@ def _next_run(at: datetime) -> datetime:
     return target
 
 
+def _next_local_run(at: datetime) -> datetime:
+    """Next 02:00 in the process's local timezone (spec: 02:00 local)."""
+    target = at.replace(hour=_ARMY_HOUR, minute=_ARMY_MINUTE, second=0, microsecond=0)
+    if target <= at:
+        target += timedelta(days=1)
+    return target
+
+
+async def _claim_army_day(redis_client, when: datetime) -> bool:
+    """Exactly-once guard for the unified army schedule (fail-CLOSED)."""
+    key = f"daily_army:claimed:{when:%Y-%m-%d}"
+    try:
+        return bool(await redis_client.set(key, "1", nx=True, ex=48 * 3600))
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"army claim check failed (skipping run): {e}")
+        return False
+
+
+async def daily_army_scheduler(redis_client, db_pool=None) -> None:
+    """02:00 LOCAL heartbeat: queue the jobs, hackathons and colleges armies.
+
+    They are separate queue consumers, so all three execute CONCURRENTLY. One
+    army failing (or a source inside it failing) does not delay or cancel the
+    others. After queueing, the same maintenance passes the legacy scheduler used
+    to run are performed once.
+    """
+    if redis_client is None or not _ARMY_ENABLED:
+        logger.info("Army scheduler disabled (no redis or ENABLE_ARMY_SCHEDULER=0)")
+        return
+    from .domains.armies import run_all_armies
+    while True:
+        now = datetime.now().astimezone()
+        nxt = _next_local_run(now)
+        wait = (nxt - now).total_seconds()
+        logger.info(f"Three-army schedule at {nxt.isoformat()} (in {int(wait)}s)")
+        try:
+            await asyncio.sleep(max(1.0, wait))
+        except asyncio.CancelledError:
+            raise
+        try:
+            if not await _claim_army_day(redis_client, datetime.now().astimezone()):
+                logger.info("Army run already claimed today — skipping (idempotent)")
+            else:
+                ids = await run_all_armies(db_pool, redis_client, run_type="scheduled")
+                logger.info(f"Scheduled armies queued: {ids}")
+        except Exception as e:  # noqa: BLE001
+            logger.error(f"Army schedule enqueue failed: {e}")
+            await asyncio.sleep(60)
+        # Maintenance passes (job knowledge gaps + retention + freshness +
+        # hackathon/college re-enrichment).
+        try:
+            await asyncio.sleep(600)
+            await sweep_unenriched(redis_client, db_pool)
+            await sweep_unverified(redis_client, db_pool)
+            await enforce_retention(db_pool)
+            corrected = await refresh_freshness(db_pool)
+            if corrected:
+                logger.info(f"Freshness refresh corrected {corrected} postings")
+            # A lead with no reachable contact has little outreach value, so the
+            # hackathon/college domains re-enrich themselves every night (bounded,
+            # and each entity is cooled down after an attempt).
+            from .domains.reenrich import run_all_reenrichment
+            reports = await run_all_reenrichment(db_pool, limit=25)
+            for domain, report in (reports or {}).items():
+                if isinstance(report, dict) and "error" not in report:
+                    logger.info(
+                        f"Re-enrichment {domain}: {report.get('attempted')} attempted, "
+                        f"{report.get('enriched')} enriched, "
+                        f"{report.get('contacts_inserted')} contacts, "
+                        f"{len(report.get('errors') or [])} failures"
+                    )
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"army maintenance pass failed: {e}")
+
+
 async def _enqueue(redis_client, sources: list[str] | None = None) -> str:
     run_id = str(uuid.uuid4())
     await redis_client.lpush(
@@ -366,6 +448,10 @@ async def daily_scrape_scheduler(redis_client, sources: list[str] | None = None,
         try:
             if not await _claim_day(redis_client, datetime.now(timezone.utc)):
                 logger.info("Daily scrape already claimed today — skipping (idempotent)")
+            elif _ARMY_ENABLED:
+                # The unified army scheduler owns the daily job discovery; this
+                # loop keeps only its maintenance duties (sweeps/retention below).
+                logger.info("Job discovery delegated to the 02:00 army schedule")
             else:
                 enabled = await load_enabled_sources(db_pool)
                 run_id = await _enqueue(redis_client, enabled)
