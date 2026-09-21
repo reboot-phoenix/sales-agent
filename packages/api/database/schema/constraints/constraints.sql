@@ -51,3 +51,69 @@ EXCEPTION WHEN duplicate_object THEN NULL; WHEN check_violation THEN NULL; END $
 ALTER TABLE companies DROP CONSTRAINT IF EXISTS companies_name_not_blank;
 ALTER TABLE companies
   ADD CONSTRAINT companies_name_not_blank CHECK (trim(name) <> '');
+
+-- ==================== [070_prediction_provenance.sql] ====================
+-- A row labelled PREDICTED (or LOW_CONFIDENCE_PREDICTION) MUST carry a basis.
+-- The spec is explicit that predicted data may never be presented as confirmed;
+-- this makes an unsupported prediction unrepresentable at the storage layer, not
+-- merely discouraged in application code.
+DO $$ BEGIN
+  ALTER TABLE hackathons DROP CONSTRAINT IF EXISTS hackathons_prediction_needs_basis;
+  ALTER TABLE hackathons ADD CONSTRAINT hackathons_prediction_needs_basis CHECK (
+    status NOT IN ('PREDICTED','LOW_CONFIDENCE_PREDICTION')
+    OR NULLIF(trim(COALESCE(prediction_basis, '')), '') IS NOT NULL
+  );
+EXCEPTION WHEN duplicate_object THEN NULL; WHEN check_violation THEN NULL; WHEN undefined_table THEN NULL; END $$;
+
+DO $$ BEGIN
+  ALTER TABLE hackathon_predictions DROP CONSTRAINT IF EXISTS hackathon_predictions_has_evidence;
+  ALTER TABLE hackathon_predictions ADD CONSTRAINT hackathon_predictions_has_evidence CHECK (
+    NULLIF(trim(basis), '') IS NOT NULL AND NULLIF(trim(method), '') IS NOT NULL
+  );
+EXCEPTION WHEN duplicate_object THEN NULL; WHEN check_violation THEN NULL; WHEN undefined_table THEN NULL; END $$;
+
+-- ==================== [080_aishe_code_not_blank.sql] ====================
+-- AISHE code is a strong identity key; a blank one must be NULL so the unique
+-- index treats it as absent rather than colliding every blank-coded college.
+DO $$ BEGIN
+  ALTER TABLE colleges DROP CONSTRAINT IF EXISTS colleges_aishe_not_blank;
+  ALTER TABLE colleges ADD CONSTRAINT colleges_aishe_not_blank CHECK (
+    aishe_code IS NULL OR trim(aishe_code) <> ''
+  );
+EXCEPTION WHEN duplicate_object THEN NULL; WHEN check_violation THEN NULL; WHEN undefined_table THEN NULL; END $$;
+
+-- ==================== [085_outreach_score_range.sql] ====================
+-- An outreach score is a 0-100 composite. Anything outside that range means the
+-- scorer is broken, and a broken score must never be stored as a real ranking.
+DO $$ BEGIN
+  ALTER TABLE leads DROP CONSTRAINT IF EXISTS leads_outreach_score_range;
+  ALTER TABLE leads ADD CONSTRAINT leads_outreach_score_range CHECK (outreach_score BETWEEN 0 AND 100);
+EXCEPTION WHEN duplicate_object THEN NULL; WHEN check_violation THEN NULL; WHEN undefined_table THEN NULL; END $$;
+
+DO $$ BEGIN
+  ALTER TABLE hackathons DROP CONSTRAINT IF EXISTS hackathons_outreach_score_range;
+  ALTER TABLE hackathons ADD CONSTRAINT hackathons_outreach_score_range CHECK (outreach_score BETWEEN 0 AND 100);
+EXCEPTION WHEN duplicate_object THEN NULL; WHEN check_violation THEN NULL; WHEN undefined_table THEN NULL; END $$;
+
+DO $$ BEGIN
+  ALTER TABLE colleges DROP CONSTRAINT IF EXISTS colleges_outreach_score_range;
+  ALTER TABLE colleges ADD CONSTRAINT colleges_outreach_score_range CHECK (outreach_score BETWEEN 0 AND 100);
+EXCEPTION WHEN duplicate_object THEN NULL; WHEN check_violation THEN NULL; WHEN undefined_table THEN NULL; END $$;
+
+-- A saved filter must be a JSON object: an array or scalar could not be replayed
+-- as a filter set, so storing one would create a view that silently does nothing.
+DO $$ BEGIN
+  ALTER TABLE saved_filters DROP CONSTRAINT IF EXISTS saved_filters_filters_is_object;
+  ALTER TABLE saved_filters ADD CONSTRAINT saved_filters_filters_is_object CHECK (jsonb_typeof(filters) = 'object');
+EXCEPTION WHEN duplicate_object THEN NULL; WHEN check_violation THEN NULL; WHEN undefined_table THEN NULL; END $$;
+
+-- ==================== [090_army_run_counters.sql] ====================
+-- Counters are monotonic non-negative; a negative count means a bookkeeping bug
+-- and must not be stored as if it were a real measurement.
+DO $$ BEGIN
+  ALTER TABLE army_runs DROP CONSTRAINT IF EXISTS army_runs_counters_nonnegative;
+  ALTER TABLE army_runs ADD CONSTRAINT army_runs_counters_nonnegative CHECK (
+    sources_attempted >= 0 AND records_discovered >= 0 AND records_inserted >= 0
+    AND duplicates_removed >= 0 AND contacts_discovered >= 0 AND errors_count >= 0
+  );
+EXCEPTION WHEN duplicate_object THEN NULL; WHEN check_violation THEN NULL; WHEN undefined_table THEN NULL; END $$;

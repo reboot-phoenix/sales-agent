@@ -1,12 +1,14 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { useQuery } from 'react-query';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   Search, LayoutDashboard, Users, Building2, Contact, GitMerge, TrendingUp,
-  Settings, LogOut, Zap, CornerDownLeft, Command,
+  Settings, LogOut, Zap, CornerDownLeft, Command, Trophy, GraduationCap, ServerCog,
 } from 'lucide-react';
 import { useAuthStore } from '@/stores/auth';
 import { useToast } from '@/components/ui/toast';
+import { searchAll } from '@/lib/api';
 import { cn } from '@/components/ui/cn';
 
 interface Cmd {
@@ -50,12 +52,16 @@ export function CommandPalette() {
   const commands = useMemo<Cmd[]>(() => {
     const nav: Cmd[] = [
       { id: 'dashboard', label: 'Dashboard', icon: <LayoutDashboard />, group: 'Navigate', run: () => go('/dashboard') },
-      { id: 'leads', label: 'Leads', hint: 'g', icon: <Users />, group: 'Navigate', run: () => go('/leads') },
+      { id: 'leads', label: 'Job Leads', hint: 'g', icon: <Users />, group: 'Navigate', run: () => go('/leads') },
+      { id: 'hackathons', label: 'Hackathon Leads', icon: <Trophy />, group: 'Navigate', run: () => go('/hackathons') },
+      { id: 'colleges', label: 'College Intelligence', icon: <GraduationCap />, group: 'Navigate', run: () => go('/colleges') },
+      { id: 'my-leads', label: 'My Leads', icon: <Users />, group: 'Navigate', run: () => go('/my-leads') },
       { id: 'companies', label: 'Companies', icon: <Building2 />, group: 'Navigate', run: () => go('/companies') },
       { id: 'contacts', label: 'HR Contacts', icon: <Contact />, group: 'Navigate', run: () => go('/contacts') },
       { id: 'duplicates', label: 'Duplicates', icon: <GitMerge />, group: 'Navigate', run: () => go('/duplicates') },
       { id: 'analytics', label: 'Analytics', icon: <TrendingUp />, group: 'Navigate', run: () => go('/analytics') },
     ];
+    if (isAdmin) nav.push({ id: 'armies', label: 'Scraper Armies', hint: 'ops', icon: <ServerCog />, group: 'Navigate', run: () => go('/armies') });
     if (isAdmin) nav.push({ id: 'settings', label: 'Settings', icon: <Settings />, group: 'Navigate', run: () => go('/settings') });
     const actions: Cmd[] = [
       { id: 'army', label: 'Run Full Army', hint: 'scrape + enrich all', icon: <Zap />, group: 'Actions', run: () => {
@@ -72,22 +78,71 @@ export function CommandPalette() {
     return [...nav, ...actions];
   }, [isAdmin]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Entity search: the palette searches records (jobs, hackathons, colleges),
+  // not just pages. Results stay grouped by domain — a college never looks like a
+  // job lead — and each result navigates to its own detail page. The server
+  // applies the same RBAC as the domain pages, so the palette cannot surface a
+  // lead the corresponding page would hide.
+  const needle = q.trim();
+  const { data: searchData, isFetching: searching } = useQuery(
+    ['palette-search', needle],
+    () => searchAll.query(needle, ['jobs', 'hackathons', 'colleges']),
+    { enabled: needle.length >= 2, staleTime: 15000, keepPreviousData: true },
+  );
+
+  const entityResults = useMemo<Cmd[]>(() => {
+    const results = (searchData as any)?.results;
+    if (!results) return [];
+    const out: Cmd[] = [];
+    for (const job of results.jobs || []) {
+      out.push({
+        id: `job-${job.id}`,
+        label: job.company_name || 'Unknown company',
+        hint: [job.job_title, job.city].filter(Boolean).join(' · ') || 'job lead',
+        icon: <Users />,
+        group: 'Job leads',
+        run: () => go(`/leads/${job.id}`),
+      });
+    }
+    for (const h of results.hackathons || []) {
+      out.push({
+        id: `hackathon-${h.id}`,
+        label: h.name,
+        hint: [h.organizer_name, h.status?.replace(/_/g, ' ')].filter(Boolean).join(' · '),
+        icon: <Trophy />,
+        group: 'Hackathons',
+        run: () => go(`/hackathons/${h.id}`),
+      });
+    }
+    for (const c of results.colleges || []) {
+      out.push({
+        id: `college-${c.id}`,
+        label: c.name,
+        hint: [c.city, c.state].filter(Boolean).join(', '),
+        icon: <GraduationCap />,
+        group: 'Colleges',
+        run: () => go(`/colleges/${c.id}`),
+      });
+    }
+    return out;
+  }, [searchData]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const filtered = useMemo(() => {
-    const needle = q.trim().toLowerCase();
-    if (!needle) return commands;
-    return commands.filter((c) => c.label.toLowerCase().includes(needle) || c.group.toLowerCase().includes(needle));
-  }, [q, commands]);
+    const lower = needle.toLowerCase();
+    if (!lower) return commands;
+    const matched = commands.filter((c) => c.label.toLowerCase().includes(lower) || c.group.toLowerCase().includes(lower));
+    return [...matched, ...entityResults];
+  }, [needle, commands, entityResults]);
 
   // group into render slices while keeping a flat active index
   const groups = useMemo(() => {
     const map = new Map<string, { cmd: Cmd; flat: number }[]>();
-    filtered.forEach((cmd) => {
-      const flat = commands.indexOf(cmd);
+    filtered.forEach((cmd, flat) => {
       if (!map.has(cmd.group)) map.set(cmd.group, []);
       map.get(cmd.group)!.push({ cmd, flat });
     });
     return [...map.entries()];
-  }, [filtered, commands]);
+  }, [filtered]);
 
   const onKey = (e: React.KeyboardEvent) => {
     if (e.key === 'ArrowDown') { e.preventDefault(); setActive((a) => Math.min(a + 1, filtered.length - 1)); }
@@ -114,7 +169,11 @@ export function CommandPalette() {
                 <kbd className="rounded border border-border bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">esc</kbd>
               </div>
               <div className="max-h-[52vh] overflow-y-auto p-2">
-                {filtered.length === 0 && <p className="px-3 py-6 text-center text-sm text-muted-foreground">No results.</p>}
+                {filtered.length === 0 && (
+                  <p className="px-3 py-6 text-center text-sm text-muted-foreground">
+                    {searching ? 'Searching records…' : 'No results.'}
+                  </p>
+                )}
                 {groups.map(([group, items]) => (
                   <div key={group} className="mb-1">
                     <p className="px-2.5 py-1.5 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">{group}</p>

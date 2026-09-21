@@ -189,6 +189,275 @@ export interface Pagination {
   pages: number;
 }
 
+// ----------------------------------------------------------------------------
+// Intelligence domains: hackathons, colleges, armies.
+// These are deliberately separate from Lead — the schemas and workflows differ.
+// ----------------------------------------------------------------------------
+
+export type HackathonStatus =
+  | 'DISCOVERED' | 'CONFIRMED' | 'ANNOUNCED' | 'REGISTRATION_OPEN' | 'UPCOMING'
+  | 'HISTORICAL' | 'RECURRING_PATTERN' | 'PREDICTED' | 'LOW_CONFIDENCE_PREDICTION';
+
+export type OutreachReadiness =
+  | 'OUTREACH_READY' | 'PARTIALLY_ENRICHED' | 'NEEDS_ENRICHMENT' | 'INSUFFICIENT_DATA';
+
+export interface Hackathon {
+  id: string;
+  name: string;
+  slug: string;
+  organizer_id: string | null;
+  organizer_name: string | null;
+  organizer_type: string | null;
+  organization_description: string | null;
+  organizer_website: string | null;
+  hackathon_url: string | null;
+  registration_url: string | null;
+  source_url: string | null;
+  source_platform: string | null;
+  event_type: string | null;
+  hackathon_type: string | null;
+  mode: 'online' | 'offline' | 'hybrid' | null;
+  venue: string | null;
+  city: string | null;
+  state: string | null;
+  country: string | null;
+  timezone: string | null;
+  registration_start: string | null;
+  registration_deadline: string | null;
+  event_start: string | null;
+  event_end: string | null;
+  result_date: string | null;
+  team_size_min: number | null;
+  team_size_max: number | null;
+  eligibility: string | null;
+  student_only: boolean | null;
+  college_only: boolean | null;
+  open_to_public: boolean | null;
+  technology: string | null;
+  domain: string | null;
+  tracks: string[];
+  problem_statements: string[];
+  themes: string[];
+  tags: string[];
+  required_skills: string[];
+  preferred_skills: string[];
+  prize_pool: number | string | null;
+  first_prize: number | null;
+  second_prize: number | null;
+  third_prize: number | null;
+  internship_opportunities: boolean | null;
+  hiring_opportunities: boolean | null;
+  certificates: boolean | null;
+  mentorship: boolean | null;
+  judging_criteria: string | null;
+  organizer_email: string | null;
+  organizer_phone: string | null;
+  organizer_linkedin: string | null;
+  organizer_instagram: string | null;
+  organizer_x: string | null;
+  organizer_facebook: string | null;
+  organizer_discord: string | null;
+  organizer_community: string | null;
+  organizer_contact_name: string | null;
+  organizer_contact_designation: string | null;
+  contact_name: string | null;
+  contact_designation: string | null;
+  contact_email: string | null;
+  contact_phone: string | null;
+  contact_linkedin: string | null;
+  contact_source: string | null;
+  outreach_priority: 'P0' | 'P1' | 'P2' | 'P3' | 'P4' | null;
+  outreach_status: string;
+  verification_status: string;
+  verification_grade: string | null;
+  source_count: number;
+  source_urls: string[];
+  last_verified_at: string | null;
+  freshness_score: number | null;
+  confidence_score: number;
+  status: HackathonStatus;
+  historical_occurrence: boolean;
+  occurrence_type: string;
+  recurrence_pattern: string | null;
+  predicted_occurrence: string | null;
+  prediction_confidence: number | null;
+  prediction_basis: string | null;
+  historical_years: number[];
+  expected_month: number | null;
+  expected_registration_window: string | null;
+  prediction_generated_at: string | null;
+  completeness_score: number;
+  freshness_category: string;
+  enrichment_status: string;
+  outreach_readiness: OutreachReadiness;
+  claimed_by: string | null;
+  claimed_at: string | null;
+  assigned_to: string | null;
+  claimed_by_email?: string | null;
+  assigned_to_email?: string | null;
+  first_seen_at: string;
+  last_seen_at: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface HackathonOccurrence {
+  id: string;
+  hackathon_id: string;
+  year: number;
+  edition: string | null;
+  event_start: string | null;
+  event_end: string | null;
+  registration_start: string | null;
+  registration_deadline: string | null;
+  venue: string | null;
+  city: string | null;
+  state: string | null;
+  mode: string | null;
+  prize_pool: number | string | null;
+  source_url: string | null;
+  source_platform: string | null;
+  is_confirmed: boolean;
+}
+
+export interface HackathonPrediction {
+  id: string;
+  hackathon_id: string;
+  predicted_occurrence: string | null;
+  expected_month: number | null;
+  expected_registration_window: string | null;
+  confidence: number;
+  basis: string;
+  evidence: Array<{ year: number; month: number | null; event_start: string | null; source_url: string | null }>;
+  historical_observations: number;
+  method: string;
+  limitations: string | null;
+  status: 'PREDICTED' | 'LOW_CONFIDENCE_PREDICTION' | 'RECURRING_PATTERN';
+  generated_at: string;
+}
+
+export interface DomainContact {
+  id: string;
+  full_name: string | null;
+  designation: string | null;
+  role_category: string;
+  priority: 'P0' | 'P1' | 'P2' | 'P3' | 'P4';
+  email?: string | null;
+  phone?: string | null;
+  linkedin_url?: string | null;
+  verification_status: string;
+  contact_source: string | null;
+  source_url?: string | null;
+  confidence_score: number;
+}
+
+export interface College {
+  id: string;
+  name: string;
+  official_name: string | null;
+  slug: string;
+  aishe_code: string | null;
+  university_affiliation: string | null;
+  state: string | null;
+  district: string | null;
+  city: string | null;
+  address: string | null;
+  pincode: string | null;
+  institution_type: string | null;
+  ownership: string | null;
+  is_public: boolean | null;
+  autonomous: boolean | null;
+  accreditation: string | null;
+  naac_grade: string | null;
+  naac_score: number | string | null;
+  nirf_rank: number | null;
+  aicte_approved: boolean | null;
+  website_url: string | null;
+  official_email: string | null;
+  phone: string | null;
+  admissions_contact: string | null;
+  placement_contact: string | null;
+  tpo_name: string | null;
+  tpo_email: string | null;
+  tpo_phone: string | null;
+  placement_head_name: string | null;
+  principal_name: string | null;
+  director_name: string | null;
+  dean_name: string | null;
+  hod: Array<{ name?: string; department?: string }>;
+  linkedin_url: string | null;
+  socials: Record<string, string>;
+  programs: string[];
+  verification_status: string;
+  verification_grade: string | null;
+  source_count: number;
+  source_urls: string[];
+  last_verified_at: string | null;
+  freshness_score: number | null;
+  confidence_score: number;
+  contact_coverage: {
+    contacts?: number;
+    emails?: number;
+    phones?: number;
+    linkedin?: number;
+    verified?: number;
+    by_role?: Record<string, number>;
+    best_priority?: string | null;
+  };
+  completeness_score: number;
+  freshness_category: string;
+  enrichment_status: string;
+  outreach_readiness: OutreachReadiness;
+  claimed_by: string | null;
+  claimed_at: string | null;
+  assigned_to: string | null;
+  claimed_by_email?: string | null;
+  assigned_to_email?: string | null;
+  contacts_count?: number;
+  tpo_contact_count?: number;
+  first_seen_at: string;
+  last_seen_at: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ArmyRun {
+  id: string;
+  domain: 'jobs' | 'hackathons' | 'colleges';
+  run_type: string;
+  status: 'queued' | 'running' | 'completed' | 'failed' | 'partial' | 'cancelled';
+  started_at: string;
+  finished_at: string | null;
+  sources_attempted: number;
+  sources_succeeded: number;
+  records_discovered: number;
+  records_inserted: number;
+  records_updated: number;
+  duplicates_removed: number;
+  contacts_discovered: number;
+  enrichments_done: number;
+  predictions_generated: number;
+  errors_count: number;
+  retries: number;
+  checkpoint: Record<string, unknown>;
+  worker_status: Array<Record<string, unknown>>;
+  error: Record<string, unknown> | null;
+}
+
+export interface ArmySource {
+  id: string;
+  domain: string;
+  name: string;
+  adapter: string;
+  tier: number;
+  enabled: boolean;
+  health_status: string;
+  last_run_at: string | null;
+  last_success_at: string | null;
+  consecutive_failures: number;
+  last_error: string | null;
+}
+
 export interface User {
   id: string;
   email: string;

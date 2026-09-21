@@ -517,3 +517,38 @@ async def fetch_json(url: str, **kw) -> Any:
         return json.loads(r.text)
     except (json.JSONDecodeError, TypeError):
         return None
+
+
+async def get_json(url: str, *, headers: Optional[dict] = None, timeout: int = 20) -> Any:
+    """GET a JSON API.
+
+    Single engine on purpose: API endpoints are not bot-walled HTML pages, so
+    escalating to a headless browser would only waste a browser for the same JSON.
+    The URL guard (public host only) still applies, because provider hosts and
+    dataset URLs can come from configuration.
+    """
+    return await fetch_json(url, timeout=timeout, headers=headers,
+                            min_engine="httpx", max_engine="httpx")
+
+
+async def post_json(url: str, *, json_body: dict, headers: Optional[dict] = None,
+                    timeout: int = 20) -> Any:
+    """JSON POST for API providers (Hunter/Apollo/Snov/...).
+
+    Deliberately small: no engine escalation and no proxy tiering, because these
+    are credentialed JSON APIs rather than scrape targets. The same public-URL
+    guard as `fetch()` applies, since the host may come from configuration.
+    """
+    import httpx
+
+    target = assert_public_http_url(url)
+    h = dict(_browser_headers(headers))
+    h.setdefault("Content-Type", "application/json")
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        resp = await client.post(target, json=json_body, headers=h)
+        if resp.status_code >= 400:
+            raise RuntimeError(f"provider POST {resp.status_code} {target}")
+        try:
+            return resp.json()
+        except ValueError:
+            return None

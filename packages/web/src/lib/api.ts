@@ -447,4 +447,305 @@ export const health = {
   },
 };
 
+// ----------------------------------------------------------------------------
+// Intelligence domains (hackathons + colleges) and the scraper armies.
+// ----------------------------------------------------------------------------
+
+export const hackathons = {
+  list: async (params?: Record<string, any>) => {
+    const res = await api.get('/hackathons', { params });
+    return res.data;
+  },
+  search: async (params?: Record<string, any>) => {
+    const res = await api.get('/hackathons/search', { params });
+    return res.data;
+  },
+  get: async (id: string) => {
+    const res = await api.get(`/hackathons/${id}`);
+    return res.data;
+  },
+  history: async (id: string) => {
+    const res = await api.get(`/hackathons/${id}/history`);
+    return res.data as { occurrences: any[]; historical_years: number[] };
+  },
+  prediction: async (id: string) => {
+    const res = await api.get(`/hackathons/${id}/prediction`);
+    return res.data;
+  },
+  claim: async (id: string) => {
+    const res = await api.post(`/hackathons/${id}/claim`, {});
+    return res.data;
+  },
+  enrich: async (id: string) => {
+    const res = await api.post(`/hackathons/${id}/enrich`, {});
+    return res.data;
+  },
+  unclaim: async (id: string) => {
+    const res = await api.post(`/hackathons/${id}/unclaim`, {});
+    return res.data;
+  },
+  assign: async (id: string, assignedTo: string | null) => {
+    const res = await api.patch(`/hackathons/${id}/assign`, { assigned_to: assignedTo });
+    return res.data;
+  },
+  setOutreachStatus: async (id: string, outreachStatus: string) => {
+    const res = await api.patch(`/hackathons/${id}/outreach`, { outreach_status: outreachStatus });
+    return res.data;
+  },
+  activity: async (id: string) => {
+    const res = await api.get(`/hackathons/${id}/activity`);
+    return res.data;
+  },
+  addNote: async (id: string, body: string) => {
+    const res = await api.post(`/hackathons/${id}/notes`, { body });
+    return res.data;
+  },
+  eda: async () => {
+    const res = await api.get('/hackathons/eda');
+    return res.data;
+  },
+  organizers: async () => {
+    const res = await api.get('/hackathons/organizers');
+    return res.data;
+  },
+  exportCsv: async (params?: Record<string, any>) => {
+    const res = await api.get('/hackathons/export', { params, responseType: 'blob' });
+    return res.data as Blob;
+  },
+  bulkClaim: async (ids: string[]) => {
+    const res = await api.post('/hackathons/bulk-claim', { ids });
+    return res.data as BulkResult;
+  },
+  bulkAssign: async (ids: string[], assignedTo: string | null) => {
+    const res = await api.patch('/hackathons/bulk-assign', { ids, assigned_to: assignedTo });
+    return res.data as BulkResult;
+  },
+  bulkStatus: async (ids: string[], field: 'outreach_status' | 'status', value: string) => {
+    const res = await api.patch('/hackathons/bulk-status', { ids, field, value });
+    return res.data as BulkResult;
+  },
+};
+
+export const colleges = {
+  list: async (params?: Record<string, any>) => {
+    const res = await api.get('/colleges', { params });
+    return res.data;
+  },
+  search: async (params?: Record<string, any>) => {
+    const res = await api.get('/colleges/search', { params });
+    return res.data;
+  },
+  get: async (id: string) => {
+    const res = await api.get(`/colleges/${id}`);
+    return res.data;
+  },
+  contacts: async (id: string) => {
+    const res = await api.get(`/colleges/${id}/contacts`);
+    return res.data;
+  },
+  enrichmentHistory: async (id: string) => {
+    const res = await api.get(`/colleges/${id}/enrichment`);
+    return res.data;
+  },
+  enrich: async (id: string) => {
+    const res = await api.post(`/colleges/${id}/enrich`, {});
+    return res.data;
+  },
+  claim: async (id: string) => {
+    const res = await api.post(`/colleges/${id}/claim`, {});
+    return res.data;
+  },
+  unclaim: async (id: string) => {
+    const res = await api.post(`/colleges/${id}/unclaim`, {});
+    return res.data;
+  },
+  assign: async (id: string, assignedTo: string | null) => {
+    const res = await api.patch(`/colleges/${id}/assign`, { assigned_to: assignedTo });
+    return res.data;
+  },
+  activity: async (id: string) => {
+    const res = await api.get(`/colleges/${id}/activity`);
+    return res.data;
+  },
+  addNote: async (id: string, body: string) => {
+    const res = await api.post(`/colleges/${id}/notes`, { body });
+    return res.data;
+  },
+  states: async () => {
+    const res = await api.get('/colleges/states');
+    return res.data;
+  },
+  eda: async () => {
+    const res = await api.get('/colleges/eda');
+    return res.data;
+  },
+  exportCsv: async (params?: Record<string, any>) => {
+    const res = await api.get('/colleges/export', { params, responseType: 'blob' });
+    return res.data as Blob;
+  },
+  bulkClaim: async (ids: string[]) => {
+    const res = await api.post('/colleges/bulk-claim', { ids });
+    return res.data as BulkResult;
+  },
+  bulkAssign: async (ids: string[], assignedTo: string | null) => {
+    const res = await api.patch('/colleges/bulk-assign', { ids, assigned_to: assignedTo });
+    return res.data as BulkResult;
+  },
+  bulkStatus: async (ids: string[], field: 'outreach_status' | 'enrichment_status', value: string) => {
+    const res = await api.patch('/colleges/bulk-status', { ids, field, value });
+    return res.data as BulkResult;
+  },
+};
+
+export interface BulkResult {
+  requested: number;
+  succeeded: number;
+  skipped: { id: string; reason: string }[];
+}
+
+/**
+ * The sendable worklist: leads ranked by how reachable and how urgent they are.
+ * The score is computed server-side so every page agrees on the order.
+ */
+export const outreach = {
+  queue: async (params?: Record<string, any>) => {
+    const res = await api.get('/outreach/queue', { params });
+    return res.data as {
+      data: Array<Record<string, any>>;
+      counts: { assessed: number; ready: number; returned: number };
+    };
+  },
+  summary: async () => {
+    const res = await api.get('/outreach/summary');
+    return res.data as {
+      readiness: Record<string, Record<string, number>>;
+      leads_with_a_locator: Record<string, number>;
+    };
+  },
+  assess: async (domain: string, id: string) => {
+    const res = await api.get(`/outreach/${domain}/${id}`);
+    return res.data;
+  },
+  reassess: async (domain: string, id: string) => {
+    const res = await api.post(`/outreach/${domain}/${id}/reassess`, {});
+    return res.data;
+  },
+};
+
+export const savedFilters = {
+  list: async (params?: Record<string, any>) => {
+    const res = await api.get('/saved-filters', { params });
+    return res.data as { data: SavedFilter[] };
+  },
+  save: async (payload: { domain: string; name: string; filters: Record<string, unknown>; is_shared?: boolean }) => {
+    const res = await api.post('/saved-filters', payload);
+    return res.data as { filter: SavedFilter };
+  },
+  rename: async (id: string, payload: { name?: string; filters?: Record<string, unknown>; is_shared?: boolean }) => {
+    const res = await api.patch(`/saved-filters/${id}`, payload);
+    return res.data as { filter: SavedFilter };
+  },
+  use: async (id: string) => {
+    const res = await api.post(`/saved-filters/${id}/use`, {});
+    return res.data as { filter: SavedFilter };
+  },
+  remove: async (id: string) => {
+    const res = await api.delete(`/saved-filters/${id}`);
+    return res.data as { deleted: boolean };
+  },
+};
+
+export interface SavedFilter {
+  id: string;
+  user_id: string;
+  domain: 'jobs' | 'hackathons' | 'colleges';
+  name: string;
+  filters: Record<string, unknown>;
+  is_shared: boolean;
+  is_mine: boolean;
+  use_count: number;
+  last_used_at: string | null;
+  owner_email?: string | null;
+}
+
+export const myLeadsDomains = {
+  jobs: async (params?: Record<string, any>) => {
+    const res = await api.get('/my-leads/jobs', { params });
+    return res.data;
+  },
+  hackathons: async (params?: Record<string, any>) => {
+    const res = await api.get('/my-leads/hackathons', { params });
+    return res.data;
+  },
+  colleges: async (params?: Record<string, any>) => {
+    const res = await api.get('/my-leads/colleges', { params });
+    return res.data;
+  },
+  exportCsv: async (domain: 'jobs' | 'hackathons' | 'colleges') => {
+    const res = await api.get('/my-leads/export', { params: { domain }, responseType: 'blob' });
+    return res.data as Blob;
+  },
+  summary: async () => {
+    const res = await api.get('/my-leads/summary');
+    return res.data;
+  },
+};
+
+export const armies = {
+  run: async (domain: 'jobs' | 'hackathons' | 'colleges', sources?: string[]) => {
+    const res = await api.post(`/armies/${domain}/run`, { sources });
+    return res.data as { run_id: string; domain: string };
+  },
+  runAll: async () => {
+    const res = await api.post('/armies/run-all', {});
+    return res.data as { run_ids: Record<string, string> };
+  },
+  runs: async (params?: { domain?: string; limit?: number }) => {
+    const res = await api.get('/armies/runs', { params });
+    return res.data as { runs: Array<import('./types').ArmyRun> };
+  },
+  runDetail: async (id: string) => {
+    const res = await api.get(`/armies/runs/${id}`);
+    return res.data as {
+      run: import('./types').ArmyRun;
+      errors: Array<{ source: string; error: string; attempt: number; created_at: string }>;
+      pending_raw: number;
+    };
+  },
+  sources: async (domain?: string) => {
+    const res = await api.get('/armies/sources', { params: { domain } });
+    return res.data as { sources: Array<import('./types').ArmySource> };
+  },
+};
+
+export const analyticsDomains = {
+  jobs: async () => {
+    const res = await api.get('/analytics/jobs');
+    return res.data;
+  },
+  hackathons: async () => {
+    const res = await api.get('/analytics/hackathons');
+    return res.data;
+  },
+  colleges: async () => {
+    const res = await api.get('/analytics/colleges');
+    return res.data;
+  },
+  scraper: async () => {
+    const res = await api.get('/analytics/scraper');
+    return res.data;
+  },
+};
+
+export const searchAll = {
+  query: async (q: string, domains?: string[]) => {
+    const res = await api.get('/search', { params: { q, domains: domains?.join(',') } });
+    return res.data;
+  },
+  suggest: async (q: string) => {
+    const res = await api.get('/search/suggest', { params: { q } });
+    return res.data as { suggestions: Array<{ label: string; domain: string; id: string }> };
+  },
+};
+
 export default api;

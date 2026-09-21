@@ -103,6 +103,33 @@ def classify_reacher_result(result: dict[str, Any]) -> str:
     return "unknown"
 
 
+async def verify_email_inhouse(email: str) -> dict[str, Any]:
+    """Fallback verifier: MX + SMTP RCPT, run in-process.
+
+    Maps the domains.email_verify verdict onto the job pipeline's vocabulary
+    (valid | invalid | catch_all | unknown). The SMTP handshake is blocking, so it
+    runs in a worker thread to keep the event loop free.
+    """
+    from .domains.email_verify import is_role_address, verify_email
+
+    try:
+        verdict = await asyncio.to_thread(verify_email, email)
+    except Exception as e:  # noqa: BLE001 - verification must never break the job
+        logger.warning("In-house verification failed for %s: %s", redact_email(email), e)
+        return {"status": "unknown", "raw": {"error": str(e)}}
+    if verdict.status == "verified":
+        # A shared role mailbox is not proof that a person can be reached, so it
+        # keeps the weaker 'catch_all' bucket the pipeline already understands.
+        status = "catch_all" if is_role_address(email) else "valid"
+    elif verdict.status == "catch_all":
+        status = "catch_all"
+    elif verdict.status == "undeliverable":
+        status = "invalid"
+    else:
+        status = "unknown"
+    return {"status": status, "raw": {"verifier": "inhouse_smtp", **verdict.to_dict()}}
+
+
 async def verify_email_reacher(email: str, reacher_url: str | None = None) -> dict[str, Any]:
     """Verify an email using the Reacher API.
 
@@ -236,6 +263,14 @@ async def process_verification_job(
             else:
                 result = await verify_email_reacher(email_to_verify)
                 email_status = result["status"]
+                if email_status == "unknown":
+                    # Reacher is optional infrastructure. When it is absent or
+                    # unwell, fall back to our own MX + SMTP probe rather than
+                    # reporting "unknown" for an address we can actually check.
+                    fallback = await verify_email_inhouse(email_to_verify)
+                    if fallback["status"] != "unknown":
+                        result = fallback
+                        email_status = fallback["status"]
 
             await conn.execute(
                 """

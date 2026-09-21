@@ -20,6 +20,12 @@ const Contacts = lazy(() => import('@/pages/Contacts'));
 const Duplicates = lazy(() => import('@/pages/Duplicates'));
 const Analytics = lazy(() => import('@/pages/Analytics'));
 const Settings = lazy(() => import('@/pages/Settings'));
+const Hackathons = lazy(() => import('@/pages/Hackathons'));
+const HackathonDetail = lazy(() => import('@/pages/HackathonDetail'));
+const Colleges = lazy(() => import('@/pages/Colleges'));
+const CollegeDetail = lazy(() => import('@/pages/CollegeDetail'));
+const Armies = lazy(() => import('@/pages/Armies'));
+const Outreach = lazy(() => import('@/pages/Outreach'));
 
 function RouteFallback() {
   return (
@@ -66,7 +72,14 @@ function App() {
             <Route path="dashboard" element={<Dashboard />} />
             <Route path="leads" element={<Leads />} />
             <Route path="my-leads" element={<MyLeads />} />
+            <Route path="outreach" element={<Outreach />} />
             <Route path="leads/:id" element={<LeadDetail />} />
+            {/* Intelligence domains keep their own routes: never one generic table. */}
+            <Route path="hackathons" element={<Hackathons />} />
+            <Route path="hackathons/:id" element={<HackathonDetail />} />
+            <Route path="colleges" element={<Colleges />} />
+            <Route path="colleges/:id" element={<CollegeDetail />} />
+            <Route path="armies" element={isAdmin ? <Armies /> : <Navigate to="/dashboard" replace />} />
             <Route path="companies" element={<Companies />} />
             <Route path="contacts" element={<Contacts />} />
             <Route path="duplicates" element={<Duplicates />} />

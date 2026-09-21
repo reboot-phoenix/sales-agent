@@ -148,6 +148,13 @@ CREATE TABLE IF NOT EXISTS leads (
   data_quality TEXT DEFAULT 'complete',
   email_status TEXT,
   whatsapp_status TEXT,
+  -- Outreach readiness (see migration 014): denormalised so the outreach queue
+  -- sorts and filters in the database rather than scoring inside a request.
+  outreach_score SMALLINT NOT NULL DEFAULT 0,
+  outreach_priority TEXT CHECK (outreach_priority IS NULL OR outreach_priority IN ('P0','P1','P2','P3','P4')),
+  outreach_readiness TEXT NOT NULL DEFAULT 'INSUFFICIENT_DATA' CHECK (outreach_readiness IN
+    ('OUTREACH_READY','PARTIALLY_ENRICHED','NEEDS_ENRICHMENT','INSUFFICIENT_DATA')),
+  outreach_assessed_at TIMESTAMPTZ,
   do_not_contact BOOLEAN DEFAULT false,
   possible_duplicate_of UUID REFERENCES leads(id) ON DELETE SET NULL,
   assigned_to UUID REFERENCES users(id) ON DELETE SET NULL,
@@ -340,4 +347,580 @@ CREATE TABLE IF NOT EXISTS outreach_tokens (
   normalized_contact TEXT NOT NULL,          -- lower(email) or E.164 phone
   channel TEXT NOT NULL DEFAULT 'email',     -- email | whatsapp
   created_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- ==================== [200_organizations.sql] ====================
+-- Canonical ORGANIZATION entity shared by hackathon organizers (companies,
+-- colleges, communities, foundations) and cross-source entity resolution.
+-- A hackathon organizer is often also a company or a college; keeping one row
+-- per real-world organization is what lets recurrence be measured per-organizer
+-- instead of per-spelling-of-their-name.
+CREATE TABLE IF NOT EXISTS organizations (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  name TEXT NOT NULL CHECK (trim(name) <> ''),
+  org_type TEXT CHECK (org_type IS NULL OR org_type IN
+    ('company', 'college', 'university', 'community', 'ngo', 'government', 'foundation', 'other')),
+  domain TEXT,                                -- registrable domain (may be NULL)
+  website_url TEXT,
+  description TEXT,
+  industry TEXT,
+  country TEXT,
+  state TEXT,
+  city TEXT,
+  linkedin_url TEXT,
+  socials JSONB NOT NULL DEFAULT '{}',
+  source_count INT NOT NULL DEFAULT 0,
+  confidence_score SMALLINT NOT NULL DEFAULT 0,
+  field_provenance JSONB NOT NULL DEFAULT '{}',
+  created_at TIMESTAMPTZ DEFAULT now(),
+  updated_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- ==================== [210_hackathons.sql] ====================
+-- HACKATHON domain — canonical event entity. One row per real hackathon series
+-- (e.g. "Smart India Hackathon"); each annual edition is a hackathon_occurrences
+-- row. Never stores a predicted future edition as if it were confirmed: the
+-- status column carries the explicit lifecycle/prediction label.
+CREATE TABLE IF NOT EXISTS hackathons (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  name TEXT NOT NULL CHECK (trim(name) <> ''),
+  slug TEXT NOT NULL UNIQUE,
+  organizer_id UUID REFERENCES organizations(id) ON DELETE SET NULL,
+  -- Identity
+  organizer_name TEXT,
+  organizer_type TEXT,
+  organization_description TEXT,
+  organizer_website TEXT,
+  hackathon_url TEXT,
+  registration_url TEXT,
+  source_url TEXT,
+  source_platform TEXT,
+  -- Event
+  event_type TEXT,                            -- hackathon | ideathon | datathon | online_challenge
+  hackathon_type TEXT,                        -- onsite | virtual | hybrid | online_challenge
+  mode TEXT CHECK (mode IS NULL OR mode IN ('online', 'offline', 'hybrid')),
+  venue TEXT,
+  city TEXT,
+  state TEXT,
+  country TEXT,
+  timezone TEXT,
+  registration_start TIMESTAMPTZ,
+  registration_deadline TIMESTAMPTZ,
+  event_start TIMESTAMPTZ,
+  event_end TIMESTAMPTZ,
+  result_date TIMESTAMPTZ,
+  team_size_min SMALLINT,
+  team_size_max SMALLINT,
+  eligibility TEXT,
+  student_only BOOLEAN,
+  college_only BOOLEAN,
+  open_to_public BOOLEAN,
+  age_limit TEXT,
+  experience_requirement TEXT,
+  -- Themes / technology
+  technology TEXT,
+  domain TEXT,
+  tracks JSONB NOT NULL DEFAULT '[]',
+  problem_statements JSONB NOT NULL DEFAULT '[]',
+  themes JSONB NOT NULL DEFAULT '[]',
+  tags JSONB NOT NULL DEFAULT '[]',
+  required_skills JSONB NOT NULL DEFAULT '[]',
+  preferred_skills JSONB NOT NULL DEFAULT '[]',
+  -- Competition
+  prize_pool NUMERIC(14,2),
+  first_prize NUMERIC(14,2),
+  second_prize NUMERIC(14,2),
+  third_prize NUMERIC(14,2),
+  sponsor_prizes JSONB NOT NULL DEFAULT '[]',
+  internship_opportunities BOOLEAN,
+  hiring_opportunities BOOLEAN,
+  certificates BOOLEAN,
+  mentorship BOOLEAN,
+  judging_criteria TEXT,
+  -- Organizer contact block (publicly listed professional contact only)
+  organizer_email TEXT,
+  organizer_phone TEXT,
+  organizer_linkedin TEXT,
+  organizer_instagram TEXT,
+  organizer_x TEXT,
+  organizer_facebook TEXT,
+  organizer_discord TEXT,
+  organizer_community TEXT,
+  organizer_contact_name TEXT,
+  organizer_contact_designation TEXT,
+  -- Outreach contact (best available ranked contact)
+  contact_name TEXT,
+  contact_designation TEXT,
+  contact_email TEXT,
+  contact_phone TEXT,
+  contact_linkedin TEXT,
+  contact_source TEXT,
+  outreach_priority TEXT CHECK (outreach_priority IS NULL OR outreach_priority IN ('P0','P1','P2','P3','P4')),
+  outreach_status TEXT NOT NULL DEFAULT 'not_started',
+  outreach_score SMALLINT NOT NULL DEFAULT 0,
+  outreach_assessed_at TIMESTAMPTZ,
+  -- Verification / provenance
+  verification_status TEXT NOT NULL DEFAULT 'unverified',
+  verification_grade TEXT,
+  source_count INT NOT NULL DEFAULT 0,
+  source_urls JSONB NOT NULL DEFAULT '[]',
+  last_verified_at TIMESTAMPTZ,
+  freshness_score SMALLINT,
+  confidence_score SMALLINT NOT NULL DEFAULT 0,
+  -- Lifecycle label. PREDICTED data must never render as CONFIRMED data.
+  status TEXT NOT NULL DEFAULT 'DISCOVERED' CHECK (status IN (
+    'DISCOVERED','CONFIRMED','ANNOUNCED','REGISTRATION_OPEN','UPCOMING','HISTORICAL',
+    'RECURRING_PATTERN','PREDICTED','LOW_CONFIDENCE_PREDICTION')),
+  historical_occurrence BOOLEAN NOT NULL DEFAULT false,
+  recurrence_pattern TEXT,
+  predicted_occurrence DATE,
+  prediction_confidence SMALLINT,
+  prediction_basis TEXT,
+  historical_years JSONB NOT NULL DEFAULT '[]',
+  expected_month SMALLINT,
+  expected_registration_window TEXT,
+  prediction_generated_at TIMESTAMPTZ,
+  occurrence_type TEXT NOT NULL DEFAULT 'once',  -- once | recurring
+  -- Data quality / outreach
+  completeness_score SMALLINT NOT NULL DEFAULT 0,
+  freshness_category TEXT NOT NULL DEFAULT 'unknown',
+  enrichment_status TEXT NOT NULL DEFAULT 'NEW',
+  outreach_readiness TEXT NOT NULL DEFAULT 'INSUFFICIENT_DATA' CHECK (outreach_readiness IN
+    ('OUTREACH_READY','PARTIALLY_ENRICHED','NEEDS_ENRICHMENT','INSUFFICIENT_DATA')),
+  -- Ownership
+  claimed_by UUID REFERENCES users(id) ON DELETE SET NULL,
+  claimed_at TIMESTAMPTZ,
+  assigned_to UUID REFERENCES users(id) ON DELETE SET NULL,
+  -- Dedup + provenance
+  fingerprint TEXT NOT NULL UNIQUE,
+  field_provenance JSONB NOT NULL DEFAULT '{}',
+  raw_payload JSONB,
+  first_seen_at TIMESTAMPTZ DEFAULT now(),
+  last_seen_at TIMESTAMPTZ DEFAULT now(),
+  is_active BOOLEAN NOT NULL DEFAULT true,
+  created_at TIMESTAMPTZ DEFAULT now(),
+  updated_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- ==================== [220_hackathon_occurrences.sql] ====================
+-- Historical occurrences are NEVER overwritten: each annual edition of one
+-- canonical hackathon is its own row, which is the raw material for EDA and
+-- recurrence prediction.
+CREATE TABLE IF NOT EXISTS hackathon_occurrences (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  hackathon_id UUID REFERENCES hackathons(id) ON DELETE CASCADE NOT NULL,
+  year SMALLINT NOT NULL,
+  edition TEXT,
+  event_start DATE,
+  event_end DATE,
+  registration_start DATE,
+  registration_deadline DATE,
+  venue TEXT,
+  city TEXT,
+  state TEXT,
+  mode TEXT,
+  prize_pool NUMERIC(14,2),
+  source_url TEXT,
+  source_platform TEXT,
+  is_confirmed BOOLEAN NOT NULL DEFAULT false,
+  notes TEXT,
+  raw_payload JSONB,
+  created_at TIMESTAMPTZ DEFAULT now(),
+  UNIQUE (hackathon_id, year)
+);
+
+-- ==================== [230_hackathon_contacts.sql] ====================
+CREATE TABLE IF NOT EXISTS hackathon_contacts (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  hackathon_id UUID REFERENCES hackathons(id) ON DELETE CASCADE NOT NULL,
+  full_name TEXT,
+  designation TEXT,
+  role_category TEXT NOT NULL DEFAULT 'organizer',  -- organizer | outreach | sponsor | judge
+  email TEXT,
+  phone TEXT,
+  linkedin_url TEXT,
+  priority TEXT CHECK (priority IS NULL OR priority IN ('P0','P1','P2','P3','P4')),
+  verification_status TEXT NOT NULL DEFAULT 'unverified',
+  verification_grade TEXT,
+  contact_source TEXT,
+  source_url TEXT,
+  confidence_score SMALLINT NOT NULL DEFAULT 0,
+  field_provenance JSONB NOT NULL DEFAULT '{}',
+  created_at TIMESTAMPTZ DEFAULT now(),
+  updated_at TIMESTAMPTZ DEFAULT now(),
+  CONSTRAINT hackathon_contacts_has_locator CHECK (
+    NULLIF(email, '') IS NOT NULL OR NULLIF(phone, '') IS NOT NULL OR NULLIF(linkedin_url, '') IS NOT NULL
+  )
+);
+
+-- ==================== [240_hackathon_sources.sql] ====================
+CREATE TABLE IF NOT EXISTS hackathon_sources (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  hackathon_id UUID REFERENCES hackathons(id) ON DELETE CASCADE NOT NULL,
+  source_platform TEXT NOT NULL,
+  source_url TEXT NOT NULL,
+  extraction_method TEXT,
+  confidence SMALLINT,
+  fetched_at TIMESTAMPTZ DEFAULT now(),
+  raw_payload JSONB,
+  UNIQUE (hackathon_id, source_url)
+);
+
+-- ==================== [250_hackathon_predictions.sql] ====================
+-- Every prediction carries its evidence, method and limitations. A prediction
+-- row is never merged into a confirmed hackathon row.
+CREATE TABLE IF NOT EXISTS hackathon_predictions (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  hackathon_id UUID REFERENCES hackathons(id) ON DELETE CASCADE NOT NULL,
+  predicted_occurrence DATE,
+  expected_month SMALLINT,
+  expected_registration_window TEXT,
+  confidence SMALLINT NOT NULL DEFAULT 0,
+  basis TEXT NOT NULL,
+  evidence JSONB NOT NULL DEFAULT '[]',
+  historical_observations INT NOT NULL DEFAULT 0,
+  method TEXT NOT NULL,
+  limitations TEXT,
+  status TEXT NOT NULL DEFAULT 'PREDICTED' CHECK (status IN
+    ('PREDICTED','LOW_CONFIDENCE_PREDICTION','RECURRING_PATTERN')),
+  generated_at TIMESTAMPTZ DEFAULT now(),
+  run_id UUID
+);
+
+-- ==================== [260_colleges.sql] ====================
+-- COLLEGE domain — canonical institution entity. state/district/city are the
+-- backbones of the state-wise dataset; AISHE code is the strongest identity key.
+CREATE TABLE IF NOT EXISTS colleges (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  name TEXT NOT NULL CHECK (trim(name) <> ''),
+  official_name TEXT,
+  slug TEXT NOT NULL UNIQUE,
+  aishe_code TEXT,                              -- unique when present (index below)
+  university_affiliation TEXT,
+  state TEXT,
+  district TEXT,
+  city TEXT,
+  address TEXT,
+  pincode TEXT,
+  institution_type TEXT,                        -- college | university | institute | deemed
+  ownership TEXT,                               -- government | private | aided | autonomous
+  is_public BOOLEAN,
+  autonomous BOOLEAN,
+  accreditation TEXT,
+  naac_grade TEXT,
+  naac_score NUMERIC(4,2),
+  nirf_rank INT,
+  aicte_approved BOOLEAN,
+  website_url TEXT,
+  official_email TEXT,
+  phone TEXT,
+  admissions_contact TEXT,
+  placement_contact TEXT,
+  tpo_name TEXT,
+  tpo_email TEXT,
+  tpo_phone TEXT,
+  placement_head_name TEXT,
+  principal_name TEXT,
+  director_name TEXT,
+  dean_name TEXT,
+  hod JSONB NOT NULL DEFAULT '[]',
+  linkedin_url TEXT,
+  socials JSONB NOT NULL DEFAULT '{}',
+  programs JSONB NOT NULL DEFAULT '[]',
+  -- Verification / provenance
+  verification_status TEXT NOT NULL DEFAULT 'unverified',
+  verification_grade TEXT,
+  source_count INT NOT NULL DEFAULT 0,
+  source_urls JSONB NOT NULL DEFAULT '[]',
+  last_verified_at TIMESTAMPTZ,
+  freshness_score SMALLINT,
+  confidence_score SMALLINT NOT NULL DEFAULT 0,
+  contact_coverage JSONB NOT NULL DEFAULT '{}',
+  -- Data quality / outreach
+  completeness_score SMALLINT NOT NULL DEFAULT 0,
+  freshness_category TEXT NOT NULL DEFAULT 'unknown',
+  enrichment_status TEXT NOT NULL DEFAULT 'NEW',
+  outreach_readiness TEXT NOT NULL DEFAULT 'INSUFFICIENT_DATA' CHECK (outreach_readiness IN
+    ('OUTREACH_READY','PARTIALLY_ENRICHED','NEEDS_ENRICHMENT','INSUFFICIENT_DATA')),
+  outreach_score SMALLINT NOT NULL DEFAULT 0,
+  outreach_priority TEXT CHECK (outreach_priority IS NULL OR outreach_priority IN ('P0','P1','P2','P3','P4')),
+  outreach_assessed_at TIMESTAMPTZ,
+  outreach_status TEXT NOT NULL DEFAULT 'not_started',
+  -- Ownership
+  claimed_by UUID REFERENCES users(id) ON DELETE SET NULL,
+  claimed_at TIMESTAMPTZ,
+  assigned_to UUID REFERENCES users(id) ON DELETE SET NULL,
+  -- Dedup + provenance
+  fingerprint TEXT NOT NULL UNIQUE,
+  field_provenance JSONB NOT NULL DEFAULT '{}',
+  raw_payload JSONB,
+  first_seen_at TIMESTAMPTZ DEFAULT now(),
+  last_seen_at TIMESTAMPTZ DEFAULT now(),
+  is_active BOOLEAN NOT NULL DEFAULT true,
+  created_at TIMESTAMPTZ DEFAULT now(),
+  updated_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- ==================== [270_college_contacts.sql] ====================
+-- Priority order per spec: TPO -> Placement Head -> Director -> Principal ->
+-- Dean -> HOD -> Placement Cell -> official institution contact -> other.
+CREATE TABLE IF NOT EXISTS college_contacts (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  college_id UUID REFERENCES colleges(id) ON DELETE CASCADE NOT NULL,
+  full_name TEXT,
+  designation TEXT,
+  role_category TEXT NOT NULL DEFAULT 'other' CHECK (role_category IN
+    ('tpo','placement_head','placement_cell','director','principal','dean','hod','official','faculty','other')),
+  priority TEXT NOT NULL DEFAULT 'P4' CHECK (priority IN ('P0','P1','P2','P3','P4')),
+  department TEXT,
+  email TEXT,
+  phone TEXT,
+  linkedin_url TEXT,
+  verification_status TEXT NOT NULL DEFAULT 'unverified',
+  verification_grade TEXT,
+  contact_source TEXT,
+  source_url TEXT,
+  confidence_score SMALLINT NOT NULL DEFAULT 0,
+  field_provenance JSONB NOT NULL DEFAULT '{}',
+  created_at TIMESTAMPTZ DEFAULT now(),
+  updated_at TIMESTAMPTZ DEFAULT now(),
+  CONSTRAINT college_contacts_has_locator CHECK (
+    NULLIF(email, '') IS NOT NULL OR NULLIF(phone, '') IS NOT NULL OR NULLIF(linkedin_url, '') IS NOT NULL
+  )
+);
+
+-- ==================== [280_college_sources.sql] ====================
+CREATE TABLE IF NOT EXISTS college_sources (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  college_id UUID REFERENCES colleges(id) ON DELETE CASCADE NOT NULL,
+  source_name TEXT NOT NULL,
+  source_url TEXT NOT NULL,
+  extraction_method TEXT,
+  confidence SMALLINT,
+  fetched_at TIMESTAMPTZ DEFAULT now(),
+  raw_payload JSONB,
+  UNIQUE (college_id, source_url)
+);
+
+-- ==================== [290_college_predictions.sql] ====================
+CREATE TABLE IF NOT EXISTS college_predictions (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  college_id UUID REFERENCES colleges(id) ON DELETE CASCADE NOT NULL,
+  prediction_type TEXT NOT NULL,               -- placement_season | admission_window | recruitment_drive
+  predicted_window TEXT,
+  expected_month SMALLINT,
+  confidence SMALLINT NOT NULL DEFAULT 0,
+  basis TEXT NOT NULL,
+  evidence JSONB NOT NULL DEFAULT '[]',
+  method TEXT NOT NULL,
+  limitations TEXT,
+  generated_at TIMESTAMPTZ DEFAULT now(),
+  run_id UUID
+);
+
+-- ==================== [300_lead_activity.sql] ====================
+-- Domain-agnostic activity/audit timeline for hackathon + college leads (job
+-- leads keep using audit_log). `domain` isolates one domain's rows; entity_id
+-- is the lead UUID in whichever domain table it belongs to.
+CREATE TABLE IF NOT EXISTS lead_activity (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  domain TEXT NOT NULL CHECK (domain IN ('job', 'hackathon', 'college')),
+  entity_id UUID NOT NULL,
+  action TEXT NOT NULL,
+  actor_id UUID REFERENCES users(id) ON DELETE SET NULL,
+  details JSONB,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- ==================== [310_lead_notes.sql] ====================
+CREATE TABLE IF NOT EXISTS lead_notes (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  domain TEXT NOT NULL CHECK (domain IN ('job', 'hackathon', 'college')),
+  entity_id UUID NOT NULL,
+  body TEXT NOT NULL CHECK (trim(body) <> ''),
+  author_id UUID REFERENCES users(id) ON DELETE SET NULL,
+  created_at TIMESTAMPTZ DEFAULT now(),
+  updated_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- ==================== [320_lead_assignments.sql] ====================
+-- Assignment history (append-only) so reassignment is auditable.
+CREATE TABLE IF NOT EXISTS lead_assignments (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  domain TEXT NOT NULL CHECK (domain IN ('job', 'hackathon', 'college')),
+  entity_id UUID NOT NULL,
+  assigned_to UUID REFERENCES users(id) ON DELETE SET NULL,
+  assigned_by UUID REFERENCES users(id) ON DELETE SET NULL,
+  note TEXT,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- ==================== [330_lead_claims.sql] ====================
+-- Claim history. The live owner lives on the domain table (claimed_by) so the
+-- atomic UPDATE ... WHERE claimed_by IS NULL remains the only write that can win
+-- a race; this table records it for audit.
+CREATE TABLE IF NOT EXISTS lead_claims (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  domain TEXT NOT NULL CHECK (domain IN ('job', 'hackathon', 'college')),
+  entity_id UUID NOT NULL,
+  claimed_by UUID REFERENCES users(id) ON DELETE SET NULL,
+  claimed_at TIMESTAMPTZ DEFAULT now(),
+  released_at TIMESTAMPTZ
+);
+
+-- ==================== [340_army_runs.sql] ====================
+-- One row per army execution (job/hackathon/college), independent of the legacy
+-- job-only scrape_runs table. Serializable so the UI can show live progress.
+CREATE TABLE IF NOT EXISTS army_runs (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  domain TEXT NOT NULL CHECK (domain IN ('jobs', 'hackathons', 'colleges')),
+  run_type TEXT NOT NULL DEFAULT 'manual',      -- manual | scheduled
+  status TEXT NOT NULL DEFAULT 'queued' CHECK (status IN
+    ('queued','running','completed','failed','partial','cancelled')),
+  started_at TIMESTAMPTZ DEFAULT now(),
+  finished_at TIMESTAMPTZ,
+  sources_attempted INT NOT NULL DEFAULT 0,
+  sources_succeeded INT NOT NULL DEFAULT 0,
+  records_discovered INT NOT NULL DEFAULT 0,
+  records_inserted INT NOT NULL DEFAULT 0,
+  records_updated INT NOT NULL DEFAULT 0,
+  duplicates_removed INT NOT NULL DEFAULT 0,
+  contacts_discovered INT NOT NULL DEFAULT 0,
+  enrichments_done INT NOT NULL DEFAULT 0,
+  predictions_generated INT NOT NULL DEFAULT 0,
+  errors_count INT NOT NULL DEFAULT 0,
+  retries INT NOT NULL DEFAULT 0,
+  checkpoint JSONB NOT NULL DEFAULT '{}',
+  worker_status JSONB NOT NULL DEFAULT '[]',
+  triggered_by UUID REFERENCES users(id) ON DELETE SET NULL,
+  error JSONB,
+  created_at TIMESTAMPTZ DEFAULT now(),
+  updated_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- ==================== [350_scraper_sources.sql] ====================
+-- Source registry per domain: adapter name + health. Distinct from source_health
+-- (jobs) because hackathon/college adapters are versioned and toggleable.
+CREATE TABLE IF NOT EXISTS scraper_sources (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  domain TEXT NOT NULL CHECK (domain IN ('jobs', 'hackathons', 'colleges')),
+  name TEXT NOT NULL,
+  adapter TEXT NOT NULL,
+  tier SMALLINT NOT NULL DEFAULT 3,
+  enabled BOOLEAN NOT NULL DEFAULT true,
+  health_status TEXT NOT NULL DEFAULT 'unknown',  -- healthy | degraded | SOURCE_TEMPORARILY_UNAVAILABLE
+  last_run_at TIMESTAMPTZ,
+  last_success_at TIMESTAMPTZ,
+  consecutive_failures INT NOT NULL DEFAULT 0,
+  last_error TEXT,
+  config JSONB NOT NULL DEFAULT '{}',
+  created_at TIMESTAMPTZ DEFAULT now(),
+  updated_at TIMESTAMPTZ DEFAULT now(),
+  UNIQUE (domain, name)
+);
+
+-- ==================== [355_raw_discovery_records.sql] ====================
+-- NO-LEAD-LOSS staging: every discovered item is written here BEFORE it is
+-- parsed/normalized, in the same transaction boundary as the fetch. A crash in a
+-- parser or normalizer therefore cannot lose a discovered lead: the row stays in
+-- status 'stored' and is re-processed on the next boot/run (idempotent by
+-- (domain, source, checksum)). This is the durable half of the pipeline
+-- DISCOVER -> RAW -> NORMALIZE -> DEDUPE -> ENRICH -> VERIFY.
+CREATE TABLE IF NOT EXISTS raw_discovery_records (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  run_id UUID,
+  domain TEXT NOT NULL CHECK (domain IN ('jobs', 'hackathons', 'colleges')),
+  source TEXT NOT NULL,
+  source_url TEXT,
+  checksum TEXT NOT NULL,
+  payload JSONB NOT NULL,
+  status TEXT NOT NULL DEFAULT 'stored' CHECK (status IN ('stored', 'processing', 'processed', 'failed', 'duplicate')),
+  attempts SMALLINT NOT NULL DEFAULT 0,
+  error TEXT,
+  fetched_at TIMESTAMPTZ DEFAULT now(),
+  processed_at TIMESTAMPTZ,
+  UNIQUE (domain, source, checksum)
+);
+
+-- ==================== [360_scraper_errors.sql] ====================
+CREATE TABLE IF NOT EXISTS scraper_errors (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  run_id UUID,
+  domain TEXT NOT NULL,
+  source TEXT NOT NULL,
+  error TEXT NOT NULL,
+  attempt SMALLINT NOT NULL DEFAULT 1,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- ==================== [370_enrichment_runs.sql] ====================
+-- Domain-agnostic enrichment execution record (college contacts, hackathon
+-- organizer contacts). Job enrichment keeps enrichment_jobs/enrichment_log.
+CREATE TABLE IF NOT EXISTS enrichment_runs (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  domain TEXT NOT NULL CHECK (domain IN ('jobs', 'hackathons', 'colleges')),
+  entity_id UUID NOT NULL,
+  status TEXT NOT NULL DEFAULT 'queued',
+  stages JSONB NOT NULL DEFAULT '[]',
+  attempts SMALLINT NOT NULL DEFAULT 0,
+  contacts_found INT NOT NULL DEFAULT 0,
+  started_at TIMESTAMPTZ DEFAULT now(),
+  finished_at TIMESTAMPTZ,
+  error JSONB
+);
+
+-- ==================== [380_data_quality_results.sql] ====================
+CREATE TABLE IF NOT EXISTS data_quality_results (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  domain TEXT NOT NULL CHECK (domain IN ('jobs', 'hackathons', 'colleges')),
+  entity_id UUID NOT NULL,
+  completeness_score SMALLINT NOT NULL DEFAULT 0,
+  freshness_score SMALLINT NOT NULL DEFAULT 0,
+  verification_score SMALLINT NOT NULL DEFAULT 0,
+  source_quality TEXT,
+  contact_quality TEXT,
+  confidence SMALLINT NOT NULL DEFAULT 0,
+  quality_state TEXT NOT NULL DEFAULT 'NEW' CHECK (quality_state IN
+    ('NEW','DISCOVERED','NORMALIZED','ENRICHING','ENRICHED','VERIFIED','NEEDS_REVIEW','STALE','FAILED')),
+  issues JSONB NOT NULL DEFAULT '[]',
+  computed_at TIMESTAMPTZ DEFAULT now(),
+  UNIQUE (domain, entity_id)
+);
+
+-- ==================== [390_analytics_snapshots.sql] ====================
+CREATE TABLE IF NOT EXISTS analytics_snapshots (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  domain TEXT NOT NULL CHECK (domain IN ('jobs', 'hackathons', 'colleges', 'scraper')),
+  metrics JSONB NOT NULL,
+  generated_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- ==================== [400_prediction_runs.sql] ====================
+CREATE TABLE IF NOT EXISTS prediction_runs (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  domain TEXT NOT NULL CHECK (domain IN ('hackathons', 'colleges')),
+  status TEXT NOT NULL DEFAULT 'running',
+  method TEXT NOT NULL,
+  entities_processed INT NOT NULL DEFAULT 0,
+  predictions_created INT NOT NULL DEFAULT 0,
+  started_at TIMESTAMPTZ DEFAULT now(),
+  finished_at TIMESTAMPTZ,
+  error JSONB
+);
+
+-- ==================== [410_saved_filters.sql] ====================
+-- Named, reusable filter sets per user and domain. Shared filters are visible to
+-- the whole team; private ones only to their owner (enforced in the route).
+CREATE TABLE IF NOT EXISTS saved_filters (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID REFERENCES users(id) ON DELETE CASCADE NOT NULL,
+  domain TEXT NOT NULL CHECK (domain IN ('jobs', 'hackathons', 'colleges')),
+  name TEXT NOT NULL CHECK (trim(name) <> ''),
+  filters JSONB NOT NULL DEFAULT '{}',
+  is_shared BOOLEAN NOT NULL DEFAULT false,
+  use_count INT NOT NULL DEFAULT 0,
+  last_used_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ DEFAULT now(),
+  updated_at TIMESTAMPTZ DEFAULT now(),
+  UNIQUE (user_id, domain, name)
 );

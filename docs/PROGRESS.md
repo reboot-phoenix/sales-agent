@@ -255,3 +255,66 @@ PASS tests/test_generate_fingerprint.py
 ## Next development action
 
 Start Phase 1: implement the actual enrichment pipeline workers (ContactOut scraper, Hunter.io email finder, LinkedIn scraper via Playwright) and wire them to the enrichment_queue consumer.
+
+---
+
+# Phase 2 — Intelligence domains (hackathons, colleges, scraper armies)
+
+The platform now covers three lead domains, each with its own schema, filters,
+enrichment and UI. Full architecture: [INTELLIGENCE.md](./INTELLIGENCE.md).
+
+## What is implemented
+
+| Area | Where | Status |
+|------|-------|--------|
+| Hackathon leads (discovery → normalize → dedupe → enrich → verify) | `scrapers/domains/hackathons/*`, `routes/hackathons.ts`, `pages/Hackathons.tsx`, `pages/HackathonDetail.tsx` | ✅ Implemented |
+| Hackathon history (one row per edition, never overwritten) | `hackathon_occurrences` | ✅ Implemented |
+| Hackathon prediction (dated only with ≥3 observations; evidence stored) | `domains/hackathons/prediction.py`, `hackathon_predictions` | ✅ Implemented |
+| Hackathon EDA | `domains/hackathons/eda.py`, `GET /hackathons/eda` | ✅ Implemented |
+| College discovery (state-wise, multi-source adapters) | `domains/colleges/adapters.py` | ✅ Implemented |
+| College contact enrichment (TPO → principal → director → dean → HOD) | `domains/colleges/enrichment.py`, `college_contacts` | ✅ Implemented |
+| Contact provenance + priority ranking (P0–P4) | `quality.py`, `entity_resolution.py`, contact tables | ✅ Implemented |
+| Entity resolution / dedup across sources | `domains/entity_resolution.py`, `normalizer.py` | ✅ Implemented |
+| My Leads with three domain sections | `routes/myLeads.ts`, `pages/MyLeads.tsx` | ✅ Implemented |
+| Atomic claim + assignment history + activity/notes | `utils/leadDomains.ts`, `lead_claims`/`lead_assignments`/`lead_activity`/`lead_notes` | ✅ Implemented |
+| Three scraper armies (manual + run-all, live progress) | `domains/armies.py`, `routes/armies.ts`, `pages/Armies.tsx` | ✅ Implemented |
+| 02:00 concurrent daily schedule with exactly-once claim | `scrapers/scheduler.py::daily_army_scheduler` | ✅ Implemented |
+| No-lead-loss durable staging + stalled-row reclaim | `raw_discovery_records`, `reclaim_stalled_raw` | ✅ Implemented + tested |
+| Analytics per domain + scraper fleet health | `routes/analytics.ts`, `components/analytics/DomainInsights.tsx` | ✅ Implemented |
+| Unified search + ⌘K palette record search | `routes/search.ts`, `components/CommandPalette.tsx` | ✅ Implemented |
+| CSV export for hackathons/colleges | `routes/*/export` | ✅ Implemented |
+
+## Verified in this phase
+
+* `packages/scrapers`: `667 passed, 1 skipped` (pytest), including no-lead-loss, prediction-honesty and the high-yield adapter suites.
+* `packages/api`: `258 passed` (jest) including claim-race, RBAC-scoping, bulk ops, schema-consistency and prediction-absence tests; `tsc --noEmit` clean.
+* `packages/web`: `67 passed` (jest) including predicted-vs-confirmed UI assertions; `tsc --noEmit` clean; production build succeeds.
+
+## Phase 2 hardening wave (2026-09-21)
+
+* **No-lead-loss moved inside the adapter.** `SourceAdapter.run(db_pool, run_id)`
+  now persists raw + records source health itself, so an orchestrator crash after
+  discovery can no longer strand leads in memory. `armies._discover_domain`
+  delegates to it. (`tests/test_no_lead_loss.py`, `tests/test_e2e_pipeline.py`)
+* **New high-yield sources.** College Army: NAAC accredited-institution listings
+  (grade extraction incl. unmapped-column fallback), JoSAA/CSAB central
+  institutes. Hackathon Army: GDG public events (hackathon-shaped filter),
+  company challenge pages (`COMPANY_CHALLENGE_URLS`, config-driven: Flipkart
+  GRiD, TCS CodeVita, Amazon ML, etc. reusing the ListingPageAdapter extraction).
+  Registry now 18 hackathon + 16 college adapters.
+* **`parse_html_tables` keeps unmapped columns** as `extra_<header>` keys, so a
+  reshuffled government portal table no longer silently drops fields like the
+  NAAC grade. The normalizer reads known columns; extras are inert elsewhere.
+* **Fixed.** `leadDomains.bulkAssign` ts-jest type error (was failing 5 API
+  suites / 29 tests); e2e MiniDB stub now models all three real
+  `UPDATE college_contacts` statement shapes.
+* **Blocked (unchanged, user keys required):** Gemini, Snov.io/ContactOut, live
+  email send; implemented-but-keyless providers (Hunter, Apollo, Snov, PDL,
+  Prospeo, Findymail) stay skipped — never stubbed.
+
+## Explicitly not claimed
+
+* Live source coverage is whatever the adapters actually fetch on a run; the UI
+  reports measured counts from `army_runs`/`scraper_sources`, never an estimate.
+* Prediction accuracy is bounded by recorded history and says so in every stored prediction.
+* Third-party paid enrichment providers (Snov.io, ContactOut, Gemini) remain blocked on user-supplied API keys, exactly as recorded in Phase 1.

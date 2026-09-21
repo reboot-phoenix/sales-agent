@@ -1,5 +1,12 @@
 # HR Shakti Lead Army — doctrine map
 
+> Three armies now run under this doctrine: **Job Army**, **Hackathon Army** and
+> **College Army**. They share the crawler/HTTP/queue/dedup/enrichment
+> infrastructure below but keep their own domain logic, tables and UI. See
+> [INTELLIGENCE.md](./INTELLIGENCE.md) for the hackathon/college domains, the
+> no-lead-loss staging table (`raw_discovery_records`), the 02:00 concurrent
+> schedule and the prediction rules.
+
 How the "army" doctrine maps to running code. Soldiers cooperate through
 shared Postgres + Redis; no soldier phones home anywhere else.
 
@@ -19,6 +26,18 @@ shared Postgres + Redis; no soldier phones home anywhere else.
 wave gate (fallback wave if failed/barren) → normalize → enrich → verify →
 draft. Human reviews; send is always manual. Draft-only mode is structural:
 no code path sends without an explicit per-lead send call.
+
+## Domain armies at a glance
+
+| Army | Domain logic | Durable staging | Enrichment | Analytics |
+|---|---|---|---|---|
+| Job Army | `scrapers/*` + `normalizer.py` | queue + `raw_discovery_records(domain='jobs')` | existing Tier 1–4 cascade | `/analytics/jobs` |
+| Hackathon Army | `scrapers/domains/hackathons/*` | `raw_discovery_records(domain='hackathons')` | organizer + sponsor contacts, cached pages | `/hackathons/eda`, `/analytics/hackathons` |
+| College Army | `scrapers/domains/colleges/*` | `raw_discovery_records(domain='colleges')` | TPO → principal → director → dean → HOD cascade | `/colleges/eda`, `/analytics/colleges` |
+
+All three are queued by `POST /armies/run` (one domain), `POST /armies/run-all`,
+and at 02:00 local by `daily_army_scheduler`. One failing source never stops an
+army, and one failing army never stops the other two.
 
 ## Deliberately NOT built (doctrine requests declined)
 - **Residential proxies / stealth evasion**: evading anti-bot measures
