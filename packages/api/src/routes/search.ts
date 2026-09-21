@@ -51,7 +51,6 @@ export const searchRoutes: FastifyPluginAsync = async (fastify) => {
         `SELECT l.id, c.name AS company_name, jp.title AS job_title, jp.city, jp.state,
                 jp.source_site, l.lead_score, l.pipeline_stage,
                 CASE WHEN c.name ILIKE $1 ESCAPE '\\' THEN 2 ELSE 1 END AS rank
-           FROM leads l
            ${LEAD_FROM_SQL}
           WHERE (c.name ILIKE $1 ESCAPE '\\' OR jp.title ILIKE $1 ESCAPE '\\'
                  OR c.domain ILIKE $1 ESCAPE '\\' OR jp.city ILIKE $1 ESCAPE '\\'
