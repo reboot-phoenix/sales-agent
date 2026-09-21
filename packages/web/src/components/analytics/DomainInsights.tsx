@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { useQuery } from 'react-query';
+import { useQuery, keepPreviousData } from '@tanstack/react-query';
 import { analyticsDomains } from '@/lib/api';
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
 import { StatCard, StatCardGrid } from '@/components/ui/stat-card';
@@ -185,11 +185,11 @@ const ScraperPanel: React.FC<{ data: any }> = ({ data }) => (
 
 const DomainInsights: React.FC = () => {
   const [tab, setTab] = useState<Domain>('hackathons');
-  const { data, isLoading, isError, error, refetch } = useQuery(
-    ['domain-analytics', tab],
-    () => analyticsDomains[tab](),
-    { staleTime: 60000, keepPreviousData: true },
-  );
+  const { data, isLoading, isError, error, refetch } = useQuery({
+  queryKey: ['domain-analytics', tab],
+  queryFn: () => analyticsDomains[tab](),
+  staleTime: 60000, placeholderData: keepPreviousData,
+});
 
   return (
     <Card>

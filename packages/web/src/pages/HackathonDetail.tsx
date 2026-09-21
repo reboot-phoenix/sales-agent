@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { useQuery, useMutation, useQueryClient } from 'react-query';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { hackathons as hackathonsApi } from '@/lib/api';
 import { Hackathon, HackathonOccurrence, HackathonPrediction, DomainContact } from '@/lib/types';
 import { useToast } from '@/components/ui/toast';
@@ -29,28 +29,49 @@ const HackathonDetail: React.FC = () => {
   const { toast } = useToast();
   const [note, setNote] = useState('');
 
-  const { data, isLoading, isError, error, refetch } = useQuery(['hackathon', id], () => hackathonsApi.get(id), { enabled: !!id });
-  const { data: predictionData } = useQuery(['hackathon-prediction', id], () => hackathonsApi.prediction(id), { enabled: !!id });
-  const { data: activityData } = useQuery(['hackathon-activity', id], () => hackathonsApi.activity(id), { enabled: !!id });
+  const { data, isLoading, isError, error, refetch } = useQuery({
+  queryKey: ['hackathon', id],
+  queryFn: () => hackathonsApi.get(id),
+  enabled: !!id,
+});
+  const { data: predictionData } = useQuery({
+  queryKey: ['hackathon-prediction', id],
+  queryFn: () => hackathonsApi.prediction(id),
+  enabled: !!id,
+});
+  const { data: activityData } = useQuery({
+  queryKey: ['hackathon-activity', id],
+  queryFn: () => hackathonsApi.activity(id),
+  enabled: !!id,
+});
 
-  const claim = useMutation(() => hackathonsApi.claim(id), {
-    onSuccess: () => { toast({ title: 'Claimed', variant: 'success' }); queryClient.invalidateQueries(['hackathon', id]); },
-    onError: (e: Error) => toast({ title: 'Claim failed', description: e.message, variant: 'error' }),
-  });
-  const enrich = useMutation(() => hackathonsApi.enrich(id), {
-    onSuccess: () => { toast({ title: 'Organizer enrichment started', variant: 'success' }); },
-    onError: (e: Error) => toast({ title: 'Enrichment failed', description: e.message, variant: 'error' }),
-  });
+  const claim = useMutation({
+  mutationFn: () => hackathonsApi.claim(id),
+  onSuccess: () => { toast({ title: 'Claimed', variant: 'success' }); queryClient.invalidateQueries({
+  queryKey: ['hackathon', id],
+}); },
+  onError: (e: Error) => toast({ title: 'Claim failed', description: e.message, variant: 'error' }),
+});
+  const enrich = useMutation({
+  mutationFn: () => hackathonsApi.enrich(id),
+  onSuccess: () => { toast({ title: 'Organizer enrichment started', variant: 'success' }); },
+  onError: (e: Error) => toast({ title: 'Enrichment failed', description: e.message, variant: 'error' }),
+});
 
-  const addNote = useMutation((body: string) => hackathonsApi.addNote(id, body), {
-    onSuccess: () => {
-      setNote('');
-      toast({ title: 'Note saved', variant: 'success' });
-      queryClient.invalidateQueries(['hackathon', id]);
-      queryClient.invalidateQueries(['hackathon-activity', id]);
-    },
-    onError: (e: Error) => toast({ title: 'Could not save note', description: e.message, variant: 'error' }),
-  });
+  const addNote = useMutation({
+  mutationFn: (body: string) => hackathonsApi.addNote(id, body),
+  onSuccess: () => {
+  setNote('');
+  toast({ title: 'Note saved', variant: 'success' });
+  queryClient.invalidateQueries({
+  queryKey: ['hackathon', id],
+});
+  queryClient.invalidateQueries({
+  queryKey: ['hackathon-activity', id],
+});
+  },
+  onError: (e: Error) => toast({ title: 'Could not save note', description: e.message, variant: 'error' }),
+});
 
   if (isLoading) return <PageLoader label="Loading hackathon profile..." />;
   if (isError || !data) return <ErrorState title="Error loading hackathon" message={(error as Error)?.message || 'Not found'} onRetry={() => refetch()} />;
@@ -78,9 +99,9 @@ const HackathonDetail: React.FC = () => {
               </a>
             )}
             {!h.claimed_by && !h.assigned_to && (
-              <Button size="sm" onClick={() => claim.mutate()} loading={claim.isLoading}><Sparkles className="h-4 w-4" />Claim</Button>
+              <Button size="sm" onClick={() => claim.mutate()} loading={claim.isPending}><Sparkles className="h-4 w-4" />Claim</Button>
             )}
-            <Button variant="outline" size="sm" onClick={() => enrich.mutate()} loading={enrich.isLoading}>Enrich organizer</Button>
+            <Button variant="outline" size="sm" onClick={() => enrich.mutate()} loading={enrich.isPending}>Enrich organizer</Button>
           </>
         }
       />
@@ -239,7 +260,7 @@ const HackathonDetail: React.FC = () => {
           <h2 className="mb-3 text-sm font-semibold">Notes</h2>
           <div className="mb-3 flex gap-2">
             <input value={note} onChange={(e) => setNote(e.target.value)} placeholder="Add a note…" className="input flex-1" />
-            <Button size="sm" disabled={!note.trim() || addNote.isLoading} onClick={() => addNote.mutate(note.trim())}>Save</Button>
+            <Button size="sm" disabled={!note.trim() || addNote.isPending} onClick={() => addNote.mutate(note.trim())}>Save</Button>
           </div>
           <ul className="space-y-2">
             {notes.map((n: any) => (

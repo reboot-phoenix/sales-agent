@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { useQuery, useMutation, useQueryClient } from 'react-query';
+import { useQuery, useMutation, useQueryClient, keepPreviousData } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 import { leads as leadsApi, myLeadsDomains } from '@/lib/api';
 import { Lead, Hackathon, College } from '@/lib/types';
@@ -45,28 +45,35 @@ const MyLeads: React.FC = () => {
   const [search, setSearch] = useState('');
   const limit = 25;
 
-  const summary = useQuery('my-leads-summary', () => myLeadsDomains.summary(), { staleTime: 30000 });
+  const summary = useQuery({
+  queryKey: ['my-leads-summary'],
+  queryFn: () => myLeadsDomains.summary(),
+  staleTime: 30000,
+});
 
-  const jobsQuery = useQuery(
-    ['my-leads-jobs', page, search],
-    () => leadsApi.mine({ page, limit, filter: search || undefined }),
-    { enabled: tab === 'jobs', staleTime: 15000, keepPreviousData: true },
-  );
-  const hackathonsQuery = useQuery(
-    ['my-leads-hackathons', page, search],
-    () => myLeadsDomains.hackathons({ page, limit, q: search || undefined }),
-    { enabled: tab === 'hackathons', staleTime: 15000, keepPreviousData: true },
-  );
-  const collegesQuery = useQuery(
-    ['my-leads-colleges', page, search],
-    () => myLeadsDomains.colleges({ page, limit, q: search || undefined }),
-    { enabled: tab === 'colleges', staleTime: 15000, keepPreviousData: true },
-  );
+  const jobsQuery = useQuery({
+  queryKey: ['my-leads-jobs', page, search],
+  queryFn: () => leadsApi.mine({ page, limit, filter: search || undefined }),
+  enabled: tab === 'jobs', staleTime: 15000, placeholderData: keepPreviousData,
+});
+  const hackathonsQuery = useQuery({
+  queryKey: ['my-leads-hackathons', page, search],
+  queryFn: () => myLeadsDomains.hackathons({ page, limit, q: search || undefined }),
+  enabled: tab === 'hackathons', staleTime: 15000, placeholderData: keepPreviousData,
+});
+  const collegesQuery = useQuery({
+  queryKey: ['my-leads-colleges', page, search],
+  queryFn: () => myLeadsDomains.colleges({ page, limit, q: search || undefined }),
+  enabled: tab === 'colleges', staleTime: 15000, placeholderData: keepPreviousData,
+});
 
-  const enrichJob = useMutation((id: string) => leadsApi.enrich(id, 'auto'), {
-    onSuccess: () => { toast({ title: 'Enrichment started', variant: 'success' }); queryClient.invalidateQueries('my-leads-jobs'); },
-    onError: (e: Error) => toast({ title: 'Action failed', description: e.message, variant: 'error' }),
-  });
+  const enrichJob = useMutation({
+  mutationFn: (id: string) => leadsApi.enrich(id, 'auto'),
+  onSuccess: () => { toast({ title: 'Enrichment started', variant: 'success' }); queryClient.invalidateQueries({
+  queryKey: ['my-leads-jobs'],
+}); },
+  onError: (e: Error) => toast({ title: 'Action failed', description: e.message, variant: 'error' }),
+});
 
   const active = tab === 'jobs' ? jobsQuery : tab === 'hackathons' ? hackathonsQuery : collegesQuery;
   const rows: any[] = active.data?.data || [];
@@ -138,7 +145,7 @@ const MyLeads: React.FC = () => {
                       <td className="table-td">
                         <div className="flex items-center justify-end gap-1.5">
                           <button type="button" title="Open" onClick={() => navigate(`/leads/${l.id}`)} className="grid h-7 w-7 place-items-center rounded-full border border-border text-muted-foreground hover:text-foreground"><Eye className="h-3.5 w-3.5" /></button>
-                          <Button variant="secondary" size="sm" disabled={enrichJob.isLoading} onClick={() => enrichJob.mutate(l.id)}><Zap className="h-3.5 w-3.5" />Enrich</Button>
+                          <Button variant="secondary" size="sm" disabled={enrichJob.isPending} onClick={() => enrichJob.mutate(l.id)}><Zap className="h-3.5 w-3.5" />Enrich</Button>
                         </div>
                       </td>
                     </tr>

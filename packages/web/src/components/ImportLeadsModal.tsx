@@ -1,5 +1,5 @@
 import React, { useMemo, useRef, useState } from 'react';
-import { useMutation } from 'react-query';
+import { useMutation } from '@tanstack/react-query';
 import { Upload, FileSpreadsheet, CheckCircle2, AlertTriangle, Loader2 } from 'lucide-react';
 import { leads as leadsApi, type ImportResult } from '@/lib/api';
 import { Modal } from '@/components/ui/modal';
@@ -137,15 +137,17 @@ export function ImportLeadsModal({
     };
   };
 
-  const dryRun = useMutation(
-    () => runChunks(true),
-    { onSuccess: (r) => setPlan(r), onError: (e: any) => setError(readableError(e)) },
-  );
+  const dryRun = useMutation({
+    mutationFn: () => runChunks(true),
+    onSuccess: (r) => setPlan(r),
+    onError: (e: any) => setError(readableError(e)),
+  });
 
-  const commit = useMutation(
-    () => runChunks(false),
-    { onSuccess: (r) => { onDone(r); reset(); onClose(); }, onError: (e: any) => setError(readableError(e)) },
-  );
+  const commit = useMutation({
+    mutationFn: () => runChunks(false),
+    onSuccess: (r) => { onDone(r); reset(); onClose(); },
+    onError: (e: any) => setError(readableError(e)),
+  });
 
   const mappedEntries = parsed ? Object.entries(parsed.mapped) : [];
   const sample = parsed?.records.slice(0, 5) ?? [];
@@ -157,7 +159,7 @@ export function ImportLeadsModal({
   return (
     <Modal
       open={open}
-      onClose={() => { if (!commit.isLoading) { reset(); onClose(); } }}
+      onClose={() => { if (!commit.isPending) { reset(); onClose(); } }}
       title="Import leads from CSV"
       description="Drop a CSV or TSV from another agency or your own sheet. Columns are matched by name and duplicates are merged automatically — re-importing an export merges onto the same leads via the Lead ID column, so nothing is ever imported twice."
       size="lg"
@@ -167,14 +169,14 @@ export function ImportLeadsModal({
             {parsed ? `${parsed.records.length} usable rows · ${mappedEntries.length} columns matched${parsed.unmapped.length ? ` · ${parsed.unmapped.length} ignored` : ''}` : 'No file loaded'}
           </span>
           <div className="flex gap-2">
-            <Button variant="outline" onClick={() => { reset(); onClose(); }} disabled={commit.isLoading}>Close</Button>
-            <Button variant="outline" onClick={() => dryRun.mutate()} disabled={!text || dryRun.isLoading}>
-              {dryRun.isLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
-              {dryRun.isLoading ? (progress ? `Checking ${progress}` : 'Checking…') : 'Check for duplicates'}
+            <Button variant="outline" onClick={() => { reset(); onClose(); }} disabled={commit.isPending}>Close</Button>
+            <Button variant="outline" onClick={() => dryRun.mutate()} disabled={!text || dryRun.isPending}>
+              {dryRun.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
+              {dryRun.isPending ? (progress ? `Checking ${progress}` : 'Checking…') : 'Check for duplicates'}
             </Button>
-            <Button onClick={() => commit.mutate()} disabled={!parsed || commit.isLoading}>
-              {commit.isLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
-              {commit.isLoading ? (progress ? `Importing ${progress}` : 'Importing…') : `Import ${parsed?.records.length ?? 0} leads`}
+            <Button onClick={() => commit.mutate()} disabled={!parsed || commit.isPending}>
+              {commit.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
+              {commit.isPending ? (progress ? `Importing ${progress}` : 'Importing…') : `Import ${parsed?.records.length ?? 0} leads`}
             </Button>
           </div>
         </div>

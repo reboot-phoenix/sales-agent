@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { useMutation, useQuery, useQueryClient } from 'react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { savedFilters as savedFiltersApi, SavedFilter } from '@/lib/api';
 import { useToast } from '@/components/ui/toast';
 import { Button } from '@/components/ui/button';
@@ -28,44 +28,51 @@ export function SavedViews({
   const [name, setName] = useState('');
   const [share, setShare] = useState(false);
 
-  const views = useQuery(['saved-filters', domain], () => savedFiltersApi.list({ domain }), {
-    staleTime: 30000,
-  });
+  const views = useQuery({
+  queryKey: ['saved-filters', domain],
+  queryFn: () => savedFiltersApi.list({ domain }),
+  staleTime: 30000,
+});
   const rows: SavedFilter[] = (views.data as any)?.data || [];
 
-  const save = useMutation(
-    (payload: { name: string; is_shared: boolean }) =>
+  const save = useMutation({
+  mutationFn: (payload: { name: string; is_shared: boolean }) =>
       savedFiltersApi.save({ domain, name: payload.name, filters: currentFilters, is_shared: payload.is_shared }),
-    {
-      onSuccess: (data) => {
-        toast({ title: `Saved view “${data.filter.name}”`, variant: 'success' });
-        setNaming(false);
-        setName('');
-        setShare(false);
-        queryClient.invalidateQueries(['saved-filters', domain]);
-      },
-      onError: (e: Error) => toast({ title: 'Could not save view', description: e.message, variant: 'error' }),
-    },
-  );
+  onSuccess: (data) => {
+  toast({ title: `Saved view “${data.filter.name}”`, variant: 'success' });
+  setNaming(false);
+  setName('');
+  setShare(false);
+  queryClient.invalidateQueries({
+  queryKey: ['saved-filters', domain],
+});
+  },
+  onError: (e: Error) => toast({ title: 'Could not save view', description: e.message, variant: 'error' }),
+});
 
   const apply = async (view: SavedFilter) => {
     onApply(view.filters || {});
     // Usage is recorded so frequently used views can be surfaced first.
     try {
       await savedFiltersApi.use(view.id);
-      queryClient.invalidateQueries(['saved-filters', domain]);
+      queryClient.invalidateQueries({
+  queryKey: ['saved-filters', domain],
+});
     } catch {
       /* a usage counter is not worth blocking the view on */
     }
   };
 
-  const remove = useMutation((id: string) => savedFiltersApi.remove(id), {
-    onSuccess: () => {
-      toast({ title: 'View deleted', variant: 'success' });
-      queryClient.invalidateQueries(['saved-filters', domain]);
-    },
-    onError: (e: Error) => toast({ title: 'Could not delete view', description: e.message, variant: 'error' }),
-  });
+  const remove = useMutation({
+  mutationFn: (id: string) => savedFiltersApi.remove(id),
+  onSuccess: () => {
+  toast({ title: 'View deleted', variant: 'success' });
+  queryClient.invalidateQueries({
+  queryKey: ['saved-filters', domain],
+});
+  },
+  onError: (e: Error) => toast({ title: 'Could not delete view', description: e.message, variant: 'error' }),
+});
 
   const hasFilters = Object.keys(currentFilters || {}).length > 0;
 
@@ -120,7 +127,7 @@ export function SavedViews({
           </label>
           <Button
             size="sm"
-            disabled={!name.trim() || save.isLoading}
+            disabled={!name.trim() || save.isPending}
             onClick={() => save.mutate({ name: name.trim(), is_shared: share })}
           >
             Save

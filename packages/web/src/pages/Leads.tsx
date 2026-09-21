@@ -1,5 +1,5 @@
 import React, { useState, useMemo } from 'react';
-import { useQuery, useMutation, useQueryClient } from 'react-query';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   useLegacyTable as useReactTable, getCoreRowModel, getSortedRowModel, getFilteredRowModel,
   getPaginationRowModel, legacyCreateColumnHelper as createColumnHelper,
@@ -95,48 +95,52 @@ const Leads: React.FC = () => {
   const [assignLead, setAssignLead] = useState<Lead | null>(null);
   const [memberSearch, setMemberSearch] = useState('');
   const isAdmin = useAuthStore.getState().user?.role === 'admin';
-  const { data: membersData } = useQuery('team-members', () => admin.teamMembers(), { retry: false, staleTime: 60000 });
+  const { data: membersData } = useQuery({
+  queryKey: ['team-members'],
+  queryFn: () => admin.teamMembers(),
+  retry: false, staleTime: 60000,
+});
   const members: Array<{ id: string; email: string; role: string }> = (membersData as any)?.members || [];
-  const assignMutation = useMutation(
-    ({ id, userId }: { id: string; userId: string | null }) => leadsApi.assign(id, userId),
-    {
-      onSuccess: () => {
-        toast({ title: 'Lead assigned', variant: 'success' });
-        setAssignLead(null);
-        queryClient.invalidateQueries('leads');
-      },
-      onError: (e) => toast({ title: 'Assign failed', description: (e as Error).message, variant: 'error' }),
-    },
-  );
+  const assignMutation = useMutation({
+  mutationFn: ({ id, userId }: { id: string; userId: string | null }) => leadsApi.assign(id, userId),
+  onSuccess: () => {
+  toast({ title: 'Lead assigned', variant: 'success' });
+  setAssignLead(null);
+  queryClient.invalidateQueries({
+  queryKey: ['leads'],
+});
+  },
+  onError: (e) => toast({ title: 'Assign failed', description: (e as Error).message, variant: 'error' }),
+});
   const [bulkAssignOpen, setBulkAssignOpen] = useState(false);
-  const bulkClaimMutation = useMutation(
-    (ids: string[]) => leadsApi.bulkClaim(ids),
-    {
-      onSuccess: (r) => {
-        const skipped = r.already_claimed?.length || 0;
-        toast({
-          title: `Claimed ${r.claimed.length} lead${r.claimed.length === 1 ? '' : 's'}`,
-          description: skipped ? `${skipped} already owned by someone else` : undefined,
-          variant: skipped && r.claimed.length === 0 ? 'warning' : 'success',
-        });
-        setSelectedIds(new Set());
-        queryClient.invalidateQueries('leads');
-      },
-      onError: (e) => toast({ title: 'Bulk claim failed', description: (e as Error).message, variant: 'error' }),
-    },
-  );
-  const bulkAssignMutation = useMutation(
-    ({ ids, userId }: { ids: string[]; userId: string | null }) => leadsApi.bulkAssign(ids, userId),
-    {
-      onSuccess: (r) => {
-        toast({ title: `Assigned ${r.assigned.length} leads`, variant: 'success' });
-        setBulkAssignOpen(false);
-        setSelectedIds(new Set());
-        queryClient.invalidateQueries('leads');
-      },
-      onError: (e) => toast({ title: 'Bulk assign failed', description: (e as Error).message, variant: 'error' }),
-    },
-  );
+  const bulkClaimMutation = useMutation({
+  mutationFn: (ids: string[]) => leadsApi.bulkClaim(ids),
+  onSuccess: (r) => {
+  const skipped = r.already_claimed?.length || 0;
+  toast({
+  title: `Claimed ${r.claimed.length} lead${r.claimed.length === 1 ? '' : 's'}`,
+  description: skipped ? `${skipped} already owned by someone else` : undefined,
+  variant: skipped && r.claimed.length === 0 ? 'warning' : 'success',
+  });
+  setSelectedIds(new Set());
+  queryClient.invalidateQueries({
+  queryKey: ['leads'],
+});
+  },
+  onError: (e) => toast({ title: 'Bulk claim failed', description: (e as Error).message, variant: 'error' }),
+});
+  const bulkAssignMutation = useMutation({
+  mutationFn: ({ ids, userId }: { ids: string[]; userId: string | null }) => leadsApi.bulkAssign(ids, userId),
+  onSuccess: (r) => {
+  toast({ title: `Assigned ${r.assigned.length} leads`, variant: 'success' });
+  setBulkAssignOpen(false);
+  setSelectedIds(new Set());
+  queryClient.invalidateQueries({
+  queryKey: ['leads'],
+});
+  },
+  onError: (e) => toast({ title: 'Bulk assign failed', description: (e as Error).message, variant: 'error' }),
+});
 
   // Column ids and the API's sort enum are different namespaces: several columns are
   // display composites (salary_range renders text but the sortable value is a numeric
@@ -195,9 +199,9 @@ const Leads: React.FC = () => {
     has_salary: salaryFilter === 'any' ? true : undefined,
   };
 
-  const { data, isLoading, refetch, isFetching, isError, error } = useQuery(
-    ['leads', page, pagination.pageSize, sortParam, sortOrder, scoreBand, pipelineStage, sourceSite, ownershipFilter, globalFilter, experienceFilter, workplaceFilter, salaryFilter, sourceFilter, cityFilter, deptFilter, contactFilter, dateFrom, freshnessFilter],
-    () => leadsApi.list({
+  const { data, isLoading, refetch, isFetching, isError, error } = useQuery({
+  queryKey: ['leads', page, pagination.pageSize, sortParam, sortOrder, scoreBand, pipelineStage, sourceSite, ownershipFilter, globalFilter, experienceFilter, workplaceFilter, salaryFilter, sourceFilter, cityFilter, deptFilter, contactFilter, dateFrom, freshnessFilter],
+  queryFn: () => leadsApi.list({
       page, limit: pagination.pageSize, sort_by: sortParam as any, sort_order: sortOrder as any,
       score_band: scoreBand, pipeline_stage: pipelineStage, source_site: sourceSite || sourceFilter || undefined,
       ownership: ownershipFilter || undefined,
@@ -209,8 +213,9 @@ const Leads: React.FC = () => {
       salary_min: salaryFilter && salaryFilter !== 'any' ? Number(salaryFilter) * 100000 : undefined,
       has_salary: salaryFilter === 'any' ? true : undefined,
     }),
-    { staleTime: 15000, refetchInterval: 20000, onError: () => {} },
-  );
+  staleTime: 15000,
+  refetchInterval: 20000,
+});
 
   useSSE('/sse/token', (event) => {
     if (isLeadLifecycleEvent(event.type)) {
@@ -218,37 +223,49 @@ const Leads: React.FC = () => {
     }
   });
 
-  const { data: armyStatus } = useQuery('army-status', () => admin.armyStatus(), { refetchInterval: 5000, refetchOnWindowFocus: false });
+  const { data: armyStatus } = useQuery({
+  queryKey: ['army-status'],
+  queryFn: () => admin.armyStatus(),
+  refetchInterval: 5000, refetchOnWindowFocus: false,
+});
   const queued = armyStatus ? (armyStatus.raw || 0) + (armyStatus.enrichment || 0) + (armyStatus.verification || 0) + (armyStatus.draft || 0) : 0;
   const [armyConfirmOpen, setArmyConfirmOpen] = useState(false);
   const [armyStopConfirmOpen, setArmyStopConfirmOpen] = useState(false);
-  const stopMutation = useMutation(() => admin.stopArmy(), {
-    onSuccess: (d: any) => {
-      queryClient.invalidateQueries('army-status');
-      setArmyStopConfirmOpen(false);
-      toast({
-        title: d?.stopped === false ? 'Nothing to stop' : 'Army stopping',
-        description: d?.stopped === false
-          ? (d?.reason || 'No scrape activity is running.')
-          : `In-flight sources cancelling now;${d?.cleared_queued_jobs ? ` ${d.cleared_queued_jobs} queued jobs discarded;` : ''} discovered leads keep flowing through the pipeline.`,
-        variant: d?.stopped === false ? 'warning' : 'success',
-      });
-    },
-    onError: (e) => toast({ title: 'Could not stop army', description: (e as Error).message, variant: 'error' }),
+  const stopMutation = useMutation({
+  mutationFn: () => admin.stopArmy(),
+  onSuccess: (d: any) => {
+  queryClient.invalidateQueries({
+  queryKey: ['army-status'],
+});
+  setArmyStopConfirmOpen(false);
+  toast({
+  title: d?.stopped === false ? 'Nothing to stop' : 'Army stopping',
+  description: d?.stopped === false
+  ? (d?.reason || 'No scrape activity is running.')
+  : `In-flight sources cancelling now;${d?.cleared_queued_jobs ? ` ${d.cleared_queued_jobs} queued jobs discarded;` : ''} discovered leads keep flowing through the pipeline.`,
+  variant: d?.stopped === false ? 'warning' : 'success',
   });
+  },
+  onError: (e) => toast({ title: 'Could not stop army', description: (e as Error).message, variant: 'error' }),
+});
   // Command palette hands off here so every army trigger is confirmed.
   React.useEffect(() => {
     const open = () => setArmyConfirmOpen(true);
     window.addEventListener('hiregen:confirm-army', open);
     return () => window.removeEventListener('hiregen:confirm-army', open);
   }, []);
-  const armyMutation = useMutation(() => admin.runArmy(), {
-    onSuccess: (d: any) => { toast({ title: 'Army deployed', description: d?.sweep_reenqueued ? `Scraping all sources + re-enriching ${d.sweep_reenqueued} leads.` : 'Scraping all sources.', variant: 'success' }); queryClient.invalidateQueries(['army-status']); setArmyConfirmOpen(false); },
-    onError: (e) => toast({ title: 'Could not start army', description: (e as Error).message, variant: 'error' }),
-  });
+  const armyMutation = useMutation({
+  mutationFn: () => admin.runArmy(),
+  onSuccess: (d: any) => { toast({ title: 'Army deployed', description: d?.sweep_reenqueued ? `Scraping all sources + re-enriching ${d.sweep_reenqueued} leads.` : 'Scraping all sources.', variant: 'success' }); queryClient.invalidateQueries({
+  queryKey: ['army-status'],
+}); setArmyConfirmOpen(false); },
+  onError: (e) => toast({ title: 'Could not start army', description: (e as Error).message, variant: 'error' }),
+});
 
   const runAction = (fn: Promise<unknown>, successMsg: string) =>
-    fn.then(() => { toast({ title: successMsg, variant: 'success' }); queryClient.invalidateQueries('leads'); })
+    fn.then(() => { toast({ title: successMsg, variant: 'success' }); queryClient.invalidateQueries({
+  queryKey: ['leads'],
+}); })
       .catch((err: Error) => toast({ title: 'Action failed', description: err.message, variant: 'error' }));
 
   // Which action is in flight for which row, so the pressed button can show a spinner
@@ -284,14 +301,18 @@ const Leads: React.FC = () => {
   });
   const who = (lead: any) => `${lead.company_name || 'this lead'}${lead.job_title ? ` · ${lead.job_title}` : ''}`;
 
-  const bulkEnrichMutation = useMutation(
-    ({ ids, provider }: { ids: string[]; provider: string }) => Promise.all(ids.map((id) => leadsApi.enrich(id, provider))),
-    { onSuccess: (_r, v) => { toast({ title: `Enrichment started`, description: `${v.ids.length} leads → ${v.provider}`, variant: 'success' }); setSelectedIds(new Set()); queryClient.invalidateQueries('leads'); }, onError: (e) => toast({ title: 'Bulk enrich failed', description: (e as Error).message, variant: 'error' }) },
-  );
-  const bulkDraftMutation = useMutation(
-    ({ leadIds, channel }: { leadIds: string[]; channel: 'email' | 'whatsapp' | 'both' }) => leadsApi.bulkDraft(leadIds, channel),
-    { onSuccess: () => { setSelectedIds(new Set()); queryClient.invalidateQueries('leads'); toast({ title: 'Drafts generated', variant: 'success' }); }, onError: (e) => toast({ title: 'Failed to generate drafts', description: (e as Error).message, variant: 'error' }) },
-  );
+  const bulkEnrichMutation = useMutation({
+  mutationFn: ({ ids, provider }: { ids: string[]; provider: string }) => Promise.all(ids.map((id) => leadsApi.enrich(id, provider))),
+  onSuccess: (_r, v) => { toast({ title: `Enrichment started`, description: `${v.ids.length} leads → ${v.provider}`, variant: 'success' }); setSelectedIds(new Set()); queryClient.invalidateQueries({
+  queryKey: ['leads'],
+}); }, onError: (e) => toast({ title: 'Bulk enrich failed', description: (e as Error).message, variant: 'error' }),
+});
+  const bulkDraftMutation = useMutation({
+  mutationFn: ({ leadIds, channel }: { leadIds: string[]; channel: 'email' | 'whatsapp' | 'both' }) => leadsApi.bulkDraft(leadIds, channel),
+  onSuccess: () => { setSelectedIds(new Set()); queryClient.invalidateQueries({
+  queryKey: ['leads'],
+}); toast({ title: 'Drafts generated', variant: 'success' }); }, onError: (e) => toast({ title: 'Failed to generate drafts', description: (e as Error).message, variant: 'error' }),
+});
 
   const leadData: any = data ?? { data: [], pagination: { page: 1, limit: 25, total: 0, pages: 0 } };
   // Freshness is server-side (freshnessFilter rides the query above): rows arrive
@@ -339,7 +360,9 @@ const Leads: React.FC = () => {
   };
 
   const onImported = (r: ImportResult) => {
-    queryClient.invalidateQueries('leads');
+    queryClient.invalidateQueries({
+  queryKey: ['leads'],
+});
     const bits = [r.created && `${r.created} new`, (r.merged + r.merged_fuzzy) && `${r.merged + r.merged_fuzzy} merged`, r.skipped && `${r.skipped} skipped`].filter(Boolean);
     toast({
       title: `Imported ${r.total_rows} rows`,
@@ -598,7 +621,7 @@ const Leads: React.FC = () => {
             <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
             <input value={globalFilter} onChange={(e) => setGlobalFilter(e.target.value)} placeholder="Search company, title, HR, email, source, city…" className="input pl-9" />
           </div>
-          {armyMutation.isLoading || stopMutation.isLoading ? (
+          {armyMutation.isPending || stopMutation.isPending ? (
             <Button variant="outline" loading disabled title="Army action in flight">
               <Zap className="h-4 w-4" />Working…
             </Button>
@@ -621,7 +644,7 @@ const Leads: React.FC = () => {
         description={`In-flight source scrapes cancel within seconds — already-scraped leads are kept. Queued scrape jobs are discarded. ${queued} lead${queued === 1 ? '' : 's'} already in the pipeline keep processing to completion.`}
         confirmLabel="Stop Army"
         confirmVariant="destructive"
-        loading={stopMutation.isLoading}
+        loading={stopMutation.isPending}
       />
       <ConfirmDialog
         open={armyConfirmOpen}
@@ -631,7 +654,7 @@ const Leads: React.FC = () => {
         description={`Sources to run: all configured. ${queued} lead${queued === 1 ? '' : 's'} currently in flight. Enrichment (OSINT → paid providers) fires where keys exist and may consume credits. This starts a long-running background job — safe to leave the page; progress streams live in the toolbar.`}
         confirmLabel="Run Army"
         confirmVariant="default"
-        loading={armyMutation.isLoading}
+        loading={armyMutation.isPending}
       />
 
       {/* toolbar */}
@@ -679,10 +702,10 @@ const Leads: React.FC = () => {
               <Button variant="secondary" size="sm" onClick={() => setActionConfirm({ title: `Enrich ${selectedIds.size} leads?`, description: 'The engine picks OSINT first, then Snov.io, ContactOut and Apollo automatically. Paid lookups consume provider credits per lead.', confirmLabel: `Enrich ${selectedIds.size}`, run: () => { setActionConfirm(null); bulkEnrichMutation.mutate({ ids: Array.from(selectedIds), provider: 'auto' }); } })}><Sparkles className="h-3.5 w-3.5" />Enrich {selectedIds.size}</Button>
               <div className="h-5 w-px bg-border" />
               <span className="text-xs text-muted-foreground">Own:</span>
-              <Button variant="secondary" size="sm" onClick={() => setActionConfirm({ title: `Claim ${selectedIds.size} leads?`, description: 'They become yours instantly and leave the shared claim pool. Leads already owned by someone else are skipped.', confirmLabel: `Claim ${selectedIds.size}`, run: () => { setActionConfirm(null); bulkClaimMutation.mutate(Array.from(selectedIds)); } })} loading={bulkClaimMutation.isLoading}><Users className="h-3.5 w-3.5" />Claim {selectedIds.size}</Button>
+              <Button variant="secondary" size="sm" onClick={() => setActionConfirm({ title: `Claim ${selectedIds.size} leads?`, description: 'They become yours instantly and leave the shared claim pool. Leads already owned by someone else are skipped.', confirmLabel: `Claim ${selectedIds.size}`, run: () => { setActionConfirm(null); bulkClaimMutation.mutate(Array.from(selectedIds)); } })} loading={bulkClaimMutation.isPending}><Users className="h-3.5 w-3.5" />Claim {selectedIds.size}</Button>
               {isAdmin && <Button variant="secondary" size="sm" onClick={() => setBulkAssignOpen(true)}><Users className="h-3.5 w-3.5" />Assign {selectedIds.size}</Button>}
               <Select value={draftChannel} onChange={(e) => setDraftChannel(e.target.value as any)} className="h-8 w-32" aria-label="Channel"><option value="both">Both</option><option value="email">Email</option><option value="whatsapp">WhatsApp</option></Select>
-              <Button size="sm" onClick={() => setActionConfirm({ title: `Generate drafts for ${selectedIds.size} leads?`, description: 'Drafts are written by Gemini from verified lead context only. Nothing is sent until you review and approve each draft.', confirmLabel: 'Generate drafts', run: () => { setActionConfirm(null); bulkDraftMutation.mutate({ leadIds: Array.from(selectedIds), channel: draftChannel }); } })} loading={bulkDraftMutation.isLoading}><Play className="h-3.5 w-3.5" />Draft</Button>
+              <Button size="sm" onClick={() => setActionConfirm({ title: `Generate drafts for ${selectedIds.size} leads?`, description: 'Drafts are written by Gemini from verified lead context only. Nothing is sent until you review and approve each draft.', confirmLabel: 'Generate drafts', run: () => { setActionConfirm(null); bulkDraftMutation.mutate({ leadIds: Array.from(selectedIds), channel: draftChannel }); } })} loading={bulkDraftMutation.isPending}><Play className="h-3.5 w-3.5" />Draft</Button>
               <Button variant="ghost" size="sm" className="ml-auto" onClick={() => setSelectedIds(new Set())}>Clear</Button>
             </div>
           </motion.div>
@@ -814,7 +837,7 @@ const Leads: React.FC = () => {
             </div>
             <div className="mt-3 flex justify-end gap-2">
               <Button variant="outline" size="sm" onClick={() => setAssignLead(null)}>Cancel</Button>
-              <Button size="sm" loading={assignMutation.isLoading} onClick={() => assignLead && assignMutation.mutate({ id: assignLead.id, userId: null })}>Unassign</Button>
+              <Button size="sm" loading={assignMutation.isPending} onClick={() => assignLead && assignMutation.mutate({ id: assignLead.id, userId: null })}>Unassign</Button>
             </div>
           </div>
         </div>

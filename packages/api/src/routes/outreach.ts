@@ -26,8 +26,8 @@ import {
 // on (who to contact, how to reach them), not every scraped field.
 const LEAD_SELECT: Record<OutreachDomain, string> = {
   jobs: `
-    l.id, jp.title AS name, c.name AS company_name, jp.location AS city, jp.remote_type,
-    jp.posted_at, jp.apply_url AS website_url, l.completeness_score, l.contact_coverage,
+    l.id, jp.title AS name, c.name AS company_name, jp.location AS city, jp.location_type,
+    jp.posted_at, jp.apply_url AS website_url, 0 AS completeness_score, NULL AS contact_coverage,
     l.outreach_readiness, l.outreach_score, l.outreach_priority, l.outreach_assessed_at,
     l.pipeline_stage, l.lead_score, l.claimed_by, l.assigned_to, l.do_not_contact,
     l.created_at`,
@@ -51,6 +51,18 @@ const LEAD_FROM: Record<OutreachDomain, string> = {
     JOIN companies c ON c.id = l.company_id`,
   hackathons: 'FROM hackathons h',
   colleges: 'FROM colleges c',
+};
+
+const DOMAIN_ACTIVE: Record<OutreachDomain, string> = {
+  jobs: 'jp.is_active IS NOT FALSE',
+  hackathons: 'h.is_active IS NOT FALSE',
+  colleges: 'c.is_active IS NOT FALSE',
+};
+
+const DOMAIN_ALIAS: Record<OutreachDomain, string> = {
+  jobs: 'l',
+  hackathons: 'h',
+  colleges: 'c',
 };
 
 const queueSchema = z.object({
@@ -136,7 +148,8 @@ export const outreachRoutes: FastifyPluginAsync = async (fastify) => {
       const perDomain: OutreachAssessment[] = [];
       const meta = new Map<string, Record<string, any>>();
       for (const domain of domains) {
-        const conditions: string[] = ['t.is_active IS NOT FALSE'];
+        const conditions: string[] = [DOMAIN_ACTIVE[domain]];
+        const alias = DOMAIN_ALIAS[domain];
         const values: unknown[] = [];
         const add = (template: string, ...vals: unknown[]) => {
           let text = template;
@@ -150,22 +163,18 @@ export const outreachRoutes: FastifyPluginAsync = async (fastify) => {
         if (domain === 'jobs') conditions.push('l.do_not_contact IS NOT TRUE');
         // Readable rows only: owned, plus the unclaimed pool a rep may claim.
         if (user.role === 'sales_rep') {
-          const alias = domain === 'jobs' ? 'l' : domain === 'hackathons' ? 'h' : 'c';
           add(
             `(${alias}.assigned_to = ? OR ${alias}.claimed_by = ? OR (${alias}.claimed_by IS NULL AND ${alias}.assigned_to IS NULL))`,
             user.id, user.id,
           );
         }
         if (q.unclaimed_only === 'true') {
-          const alias = domain === 'jobs' ? 'l' : domain === 'hackathons' ? 'h' : 'c';
           conditions.push(`${alias}.claimed_by IS NULL AND ${alias}.assigned_to IS NULL`);
         }
         if (q.readiness) {
-          const alias = domain === 'jobs' ? 'l' : domain === 'hackathons' ? 'h' : 'c';
           add(`${alias}.outreach_readiness = ?`, q.readiness);
         }
         if (q.priority) {
-          const alias = domain === 'jobs' ? 'l' : domain === 'hackathons' ? 'h' : 'c';
           add(`${alias}.outreach_priority = ?`, q.priority);
         }
         if (q.state) {
@@ -183,7 +192,6 @@ export const outreachRoutes: FastifyPluginAsync = async (fastify) => {
           }
         }
         if (q.min_score != null) {
-          const alias = domain === 'jobs' ? 'l' : domain === 'hackathons' ? 'h' : 'c';
           add(`${alias}.outreach_score >= ?`, q.min_score);
         }
         const where = `WHERE ${conditions.join(' AND ')}`;
@@ -258,7 +266,7 @@ export const outreachRoutes: FastifyPluginAsync = async (fastify) => {
       }
       const sql = getDB();
       const rows = (await sql.unsafe(
-        `SELECT ${LEAD_SELECT[domain]} ${LEAD_FROM[domain]} WHERE ${domain === 'jobs' ? 'l' : domain === 'hackathons' ? 'h' : 'c'}.id = $1`,
+        `SELECT ${LEAD_SELECT[domain]} ${LEAD_FROM[domain]} WHERE ${DOMAIN_ALIAS[domain]}.id = $1`,
         [req.params.id],
       )) as any[];
       if (rows.length === 0) return reply.status(404).send({ error: 'not found' });

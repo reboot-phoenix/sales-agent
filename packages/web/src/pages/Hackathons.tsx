@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { useQuery, useMutation, useQueryClient } from 'react-query';
+import { useQuery, useMutation, useQueryClient, keepPreviousData } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 import { hackathons as hackathonsApi } from '@/lib/api';
 import { Hackathon } from '@/lib/types';
@@ -61,32 +61,37 @@ const Hackathons: React.FC = () => {
     contact: contact || undefined,
   }), [page, search, status, state, mode, registration, predictedOnly, contact]);
 
-  const { data, isLoading, isError, error, refetch, isFetching } = useQuery(
-    ['hackathons', params],
-    () => hackathonsApi.list(params),
-    { staleTime: 15000, keepPreviousData: true },
-  );
+  const { data, isLoading, isError, error, refetch, isFetching } = useQuery({
+  queryKey: ['hackathons', params],
+  queryFn: () => hackathonsApi.list(params),
+  staleTime: 15000, placeholderData: keepPreviousData,
+});
 
   const rows: Hackathon[] = (data as any)?.data || [];
   const pagination = (data as any)?.pagination;
   const selection = useBulkSelection(rows);
 
-  const bulkStatus = useMutation(
-    ({ ids, value }: { ids: string[]; value: string }) => hackathonsApi.bulkStatus(ids, 'outreach_status', value),
-    {
-      onSuccess: () => queryClient.invalidateQueries('hackathons'),
-      onError: (e: Error) => toast({ title: 'Bulk status failed', description: e.message, variant: 'error' }),
-    },
-  );
+  const bulkStatus = useMutation({
+  mutationFn: ({ ids, value }: { ids: string[]; value: string }) => hackathonsApi.bulkStatus(ids, 'outreach_status', value),
+  onSuccess: () => queryClient.invalidateQueries({
+  queryKey: ['hackathons'],
+}),
+  onError: (e: Error) => toast({ title: 'Bulk status failed', description: e.message, variant: 'error' }),
+});
 
-  const claimMutation = useMutation((id: string) => hackathonsApi.claim(id), {
-    onSuccess: () => {
-      toast({ title: 'Hackathon claimed', variant: 'success' });
-      queryClient.invalidateQueries('hackathons');
-      queryClient.invalidateQueries('my-leads-hackathons');
-    },
-    onError: (e: Error) => toast({ title: 'Claim failed', description: e.message, variant: 'error' }),
-  });
+  const claimMutation = useMutation({
+  mutationFn: (id: string) => hackathonsApi.claim(id),
+  onSuccess: () => {
+  toast({ title: 'Hackathon claimed', variant: 'success' });
+  queryClient.invalidateQueries({
+  queryKey: ['hackathons'],
+});
+  queryClient.invalidateQueries({
+  queryKey: ['my-leads-hackathons'],
+});
+  },
+  onError: (e: Error) => toast({ title: 'Claim failed', description: e.message, variant: 'error' }),
+});
 
   const exportCsv = async () => {
     try {
@@ -254,7 +259,7 @@ const Hackathons: React.FC = () => {
                     <div className="flex items-center justify-end gap-1.5">
                       <button type="button" title="Open" onClick={() => navigate(`/hackathons/${h.id}`)} className="grid h-7 w-7 place-items-center rounded-full border border-border text-muted-foreground hover:text-foreground"><Eye className="h-3.5 w-3.5" /></button>
                       {!h.claimed_by && !h.assigned_to && (
-                        <Button variant="secondary" size="sm" disabled={claimMutation.isLoading} onClick={() => claimMutation.mutate(h.id)}>
+                        <Button variant="secondary" size="sm" disabled={claimMutation.isPending} onClick={() => claimMutation.mutate(h.id)}>
                           <Sparkles className="h-3.5 w-3.5" />Claim
                         </Button>
                       )}

@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { useMutation, useQuery, useQueryClient } from 'react-query';
+import { useMutation, useQuery, useQueryClient, keepPreviousData } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 import { outreach as outreachApi, hackathons as hackathonsApi, colleges as collegesApi } from '@/lib/api';
 import { useToast } from '@/components/ui/toast';
@@ -68,30 +68,36 @@ const Outreach: React.FC = () => {
     return clean;
   }, [filters]);
 
-  const queue = useQuery(['outreach-queue', params], () => outreachApi.queue(params), {
-    staleTime: 15000,
-    keepPreviousData: true,
-  });
-  const summary = useQuery('outreach-summary', () => outreachApi.summary(), { staleTime: 60000 });
+  const queue = useQuery({
+  queryKey: ['outreach-queue', params],
+  queryFn: () => outreachApi.queue(params),
+  staleTime: 15000,
+  placeholderData: keepPreviousData,
+});
+  const summary = useQuery({
+  queryKey: ['outreach-summary'],
+  queryFn: () => outreachApi.summary(),
+  staleTime: 60000,
+});
 
   const rows: any[] = (queue.data as any)?.data || [];
   const counts = (queue.data as any)?.counts || { assessed: 0, ready: 0, returned: 0 };
   const selection = useBulkSelection(rows);
 
-  const reassess = useMutation(
-    ({ domain, id }: { domain: string; id: string }) => outreachApi.reassess(domain, id),
-    {
-      onSuccess: () => {
-        toast({ title: 'Lead re-checked', description: 'Deliverability and score were recomputed.', variant: 'success' });
-        queryClient.invalidateQueries('outreach-queue');
-      },
-      onError: (e: Error) => toast({
-        title: 'Re-check unavailable',
-        description: `${e.message} — the previous verdict is unchanged.`,
-        variant: 'warning',
-      }),
-    },
-  );
+  const reassess = useMutation({
+  mutationFn: ({ domain, id }: { domain: string; id: string }) => outreachApi.reassess(domain, id),
+  onSuccess: () => {
+  toast({ title: 'Lead re-checked', description: 'Deliverability and score were recomputed.', variant: 'success' });
+  queryClient.invalidateQueries({
+  queryKey: ['outreach-queue'],
+});
+  },
+  onError: (e: Error) => toast({
+  title: 'Re-check unavailable',
+  description: `${e.message} — the previous verdict is unchanged.`,
+  variant: 'warning',
+  }),
+});
 
   const bulkHandlers = {
     claim: async (ids: string[]) => {
@@ -317,7 +323,7 @@ const Outreach: React.FC = () => {
                           <Button
                             size="sm"
                             variant="secondary"
-                            disabled={reassess.isLoading}
+                            disabled={reassess.isPending}
                             onClick={() => reassess.mutate({ domain: assessment.domain, id: assessment.entity_id })}
                           >
                             Re-check

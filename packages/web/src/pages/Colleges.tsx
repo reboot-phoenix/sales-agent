@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { useQuery, useMutation, useQueryClient } from 'react-query';
+import { useQuery, useMutation, useQueryClient, keepPreviousData } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 import { colleges as collegesApi } from '@/lib/api';
 import { College } from '@/lib/types';
@@ -45,30 +45,37 @@ const Colleges: React.FC = () => {
     outreach_readiness: readiness || undefined,
   }), [page, search, state, ownership, hasTpo, readiness]);
 
-  const { data, isLoading, isError, error, refetch, isFetching } = useQuery(
-    ['colleges', params],
-    () => collegesApi.list(params),
-    { staleTime: 15000, keepPreviousData: true },
-  );
-  const { data: statesData } = useQuery('college-states', () => collegesApi.states(), { staleTime: 300000 });
+  const { data, isLoading, isError, error, refetch, isFetching } = useQuery({
+  queryKey: ['colleges', params],
+  queryFn: () => collegesApi.list(params),
+  staleTime: 15000, placeholderData: keepPreviousData,
+});
+  const { data: statesData } = useQuery({
+  queryKey: ['college-states'],
+  queryFn: () => collegesApi.states(),
+  staleTime: 300000,
+});
 
   const rows: College[] = (data as any)?.data || [];
   const pagination = (data as any)?.pagination;
   const states: Array<{ state: string; total: number; with_tpo: number }> = statesData?.states || [];
   const selection = useBulkSelection(rows);
 
-  const bulkStatus = useMutation(
-    ({ ids, value }: { ids: string[]; value: string }) => collegesApi.bulkStatus(ids, 'outreach_status', value),
-    {
-      onSuccess: () => queryClient.invalidateQueries('colleges'),
-      onError: (e: Error) => toast({ title: 'Bulk status failed', description: e.message, variant: 'error' }),
-    },
-  );
+  const bulkStatus = useMutation({
+  mutationFn: ({ ids, value }: { ids: string[]; value: string }) => collegesApi.bulkStatus(ids, 'outreach_status', value),
+  onSuccess: () => queryClient.invalidateQueries({
+  queryKey: ['colleges'],
+}),
+  onError: (e: Error) => toast({ title: 'Bulk status failed', description: e.message, variant: 'error' }),
+});
 
-  const claim = useMutation((id: string) => collegesApi.claim(id), {
-    onSuccess: () => { toast({ title: 'College claimed', variant: 'success' }); queryClient.invalidateQueries('colleges'); },
-    onError: (e: Error) => toast({ title: 'Claim failed', description: e.message, variant: 'error' }),
-  });
+  const claim = useMutation({
+  mutationFn: (id: string) => collegesApi.claim(id),
+  onSuccess: () => { toast({ title: 'College claimed', variant: 'success' }); queryClient.invalidateQueries({
+  queryKey: ['colleges'],
+}); },
+  onError: (e: Error) => toast({ title: 'Claim failed', description: e.message, variant: 'error' }),
+});
 
   const exportCsv = async () => {
     try {
@@ -204,7 +211,7 @@ const Colleges: React.FC = () => {
                     <div className="flex items-center justify-end gap-1.5">
                       <button type="button" title="Open" onClick={() => navigate(`/colleges/${c.id}`)} className="grid h-7 w-7 place-items-center rounded-full border border-border text-muted-foreground hover:text-foreground"><Eye className="h-3.5 w-3.5" /></button>
                       {!c.claimed_by && !c.assigned_to && (
-                        <Button variant="secondary" size="sm" disabled={claim.isLoading} onClick={() => claim.mutate(c.id)}><Sparkles className="h-3.5 w-3.5" />Claim</Button>
+                        <Button variant="secondary" size="sm" disabled={claim.isPending} onClick={() => claim.mutate(c.id)}><Sparkles className="h-3.5 w-3.5" />Claim</Button>
                       )}
                     </div>
                   </td>
