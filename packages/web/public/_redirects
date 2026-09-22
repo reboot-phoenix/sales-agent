@@ -1,0 +1,6 @@
+# SPA fallback for Cloudflare Pages (master-prompt §45).
+# Pages serves real files first, then applies these redirects — so hashed assets
+# under /assets/* resolve normally and only unknown paths fall through to the
+# app shell. Explicit is better than the implicit SPA auto-detection: it keeps
+# working the same way if the output layout ever changes.
+/*    /index.html    200

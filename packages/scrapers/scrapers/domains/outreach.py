@@ -437,7 +437,12 @@ async def load_contacts(conn, domain: str, entity_ids: list[str]) -> dict[str, l
         # A job lead points at exactly one HR contact through hr_contact_id.
         rows = await conn.fetch(
             """
-            SELECT l.id AS lead_id, hc.*
+            SELECT l.id AS lead_id, hc.*,
+                   CASE WHEN hc.email_verified IS TRUE THEN 'verified'
+                        ELSE 'unverified' END AS verification_status,
+                   CASE WHEN hc.confidence_score >= 80 THEN 'A'
+                        WHEN hc.confidence_score >= 55 THEN 'B'
+                        ELSE 'C' END AS verification_grade
               FROM leads l JOIN hr_contacts hc ON hc.id = l.hr_contact_id
              WHERE l.id = ANY($1::uuid[])
             """,

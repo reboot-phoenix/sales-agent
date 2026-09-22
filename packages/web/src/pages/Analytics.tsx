@@ -1,5 +1,5 @@
 import React, { useMemo } from 'react';
-import { useQuery, useQueryClient } from 'react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 import {
   ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Cell, LabelList,
@@ -46,19 +46,35 @@ const Analytics: React.FC = () => {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const isAdmin = useAuthStore((s) => s.user?.role === 'admin');
-  const { data: stats, isLoading: statsLoading, error: statsError, refetch: refetchStats } = useQuery('dashboard-stats', () => dashboard.stats(), { refetchInterval: 15000 });
-  const { data: credits, isLoading: creditsLoading } = useQuery('dashboard-credits', () => dashboard.credits(), { refetchInterval: 15000 });
+  const { data: stats, isLoading: statsLoading, error: statsError, refetch: refetchStats } = useQuery({
+  queryKey: ['dashboard-stats'],
+  queryFn: () => dashboard.stats(),
+  refetchInterval: 15000,
+});
+  const { data: credits, isLoading: creditsLoading } = useQuery({
+  queryKey: ['dashboard-credits'],
+  queryFn: () => dashboard.credits(),
+  refetchInterval: 15000,
+});
   // /runs is admin-only: don't fire it as sales_rep (was a 403 + a false "no runs" empty state).
-  const { data: runs, isLoading: runsLoading } = useQuery('dashboard-runs', () => admin.getRuns(20), {
-    enabled: isAdmin,
-    retry: false,
-  });
+  const { data: runs, isLoading: runsLoading } = useQuery({
+  queryKey: ['dashboard-runs'],
+  queryFn: () => admin.getRuns(20),
+  enabled: isAdmin,
+  retry: false,
+});
 
   useSSE('/sse/token', (event) => {
     if (isLeadLifecycleEvent(event.type)) {
-      queryClient.invalidateQueries('dashboard-stats');
-      queryClient.invalidateQueries('dashboard-credits');
-      if (isAdmin) queryClient.invalidateQueries('dashboard-runs');
+      queryClient.invalidateQueries({
+  queryKey: ['dashboard-stats'],
+});
+      queryClient.invalidateQueries({
+  queryKey: ['dashboard-credits'],
+});
+      if (isAdmin) queryClient.invalidateQueries({
+  queryKey: ['dashboard-runs'],
+});
     }
   });
 

@@ -1,5 +1,5 @@
 import React, { useState, useMemo } from 'react';
-import { useQuery, useMutation, useQueryClient } from 'react-query';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 import { useAuthStore } from '@/stores/auth';
 import { contacts as contactsApi, HRContact } from '@/lib/api';
@@ -56,49 +56,57 @@ const Contacts: React.FC = () => {
 
   const isAdmin = user?.role === 'admin';
 
-  const { data, isLoading, isError, error, refetch } = useQuery(
-    ['contacts', pagination.pageIndex + 1, PAGE_SIZE, globalFilter],
-    () => contactsApi.list({ page: pagination.pageIndex + 1, limit: PAGE_SIZE, search: globalFilter || undefined }),
-    // These pages had no live wiring at all: a scrape or enrichment elsewhere
-    // left them showing whatever was loaded at mount until a manual reload.
-    { staleTime: 15000, refetchInterval: 20000, onError: () => {} },
-  );
+  const { data, isLoading, isError, error, refetch } = useQuery({
+  queryKey: ['contacts', pagination.pageIndex + 1, PAGE_SIZE, globalFilter],
+  queryFn: () => contactsApi.list({ page: pagination.pageIndex + 1, limit: PAGE_SIZE, search: globalFilter || undefined }),
+  // These pages had no live wiring at all: a scrape or enrichment elsewhere
+  // left them showing whatever was loaded at mount until a manual reload.
+  // (v5 dropped onError from useQuery; errors surface via isError below.)
+  staleTime: 15000,
+  refetchInterval: 20000,
+});
 
   useSSE('/sse/token', (event) => {
     if (isLeadLifecycleEvent(event.type)) refetch();
   });
 
-  const createMutation = useMutation((data: Partial<HRContact>) => contactsApi.create(data), {
-    onSuccess: () => {
-      queryClient.invalidateQueries('contacts');
-      setShowForm(false);
-      setFormData(EMPTY_FORM);
-      toast({ title: 'Contact created', variant: 'success' });
-    },
-    onError: (err) => toast({ title: 'Failed to create contact', description: (err as Error).message, variant: 'error' }),
-  });
+  const createMutation = useMutation({
+  mutationFn: (data: Partial<HRContact>) => contactsApi.create(data),
+  onSuccess: () => {
+  queryClient.invalidateQueries({
+  queryKey: ['contacts'],
+});
+  setShowForm(false);
+  setFormData(EMPTY_FORM);
+  toast({ title: 'Contact created', variant: 'success' });
+  },
+  onError: (err) => toast({ title: 'Failed to create contact', description: (err as Error).message, variant: 'error' }),
+});
 
-  const updateMutation = useMutation(
-    ({ id, data }: { id: string; data: Partial<HRContact> }) => contactsApi.update(id, data),
-    {
-      onSuccess: () => {
-        queryClient.invalidateQueries('contacts');
-        setEditingId(null);
-        setShowForm(false);
-        setFormData(EMPTY_FORM);
-        toast({ title: 'Contact updated', variant: 'success' });
-      },
-      onError: (err) => toast({ title: 'Failed to update contact', description: (err as Error).message, variant: 'error' }),
-    },
-  );
+  const updateMutation = useMutation({
+  mutationFn: ({ id, data }: { id: string; data: Partial<HRContact> }) => contactsApi.update(id, data),
+  onSuccess: () => {
+  queryClient.invalidateQueries({
+  queryKey: ['contacts'],
+});
+  setEditingId(null);
+  setShowForm(false);
+  setFormData(EMPTY_FORM);
+  toast({ title: 'Contact updated', variant: 'success' });
+  },
+  onError: (err) => toast({ title: 'Failed to update contact', description: (err as Error).message, variant: 'error' }),
+});
 
-  const deleteMutation = useMutation((id: string) => contactsApi.remove(id), {
-    onSuccess: () => {
-      queryClient.invalidateQueries('contacts');
-      toast({ title: 'Contact deleted', variant: 'success' });
-    },
-    onError: (err) => toast({ title: 'Failed to delete contact', description: (err as Error).message, variant: 'error' }),
-  });
+  const deleteMutation = useMutation({
+  mutationFn: (id: string) => contactsApi.remove(id),
+  onSuccess: () => {
+  queryClient.invalidateQueries({
+  queryKey: ['contacts'],
+});
+  toast({ title: 'Contact deleted', variant: 'success' });
+  },
+  onError: (err) => toast({ title: 'Failed to delete contact', description: (err as Error).message, variant: 'error' }),
+});
 
   const contactData = (data as any) ?? { data: [], pagination: { page: 1, limit: 50, total: 0, pages: 0 } };
   const contacts: HRContact[] = contactData.data || [];
@@ -397,7 +405,7 @@ const Contacts: React.FC = () => {
             />
           </div>
           <div className="flex gap-2 md:col-span-2">
-            <Button type="submit" loading={createMutation.isLoading || updateMutation.isLoading}>
+            <Button type="submit" loading={createMutation.isPending || updateMutation.isPending}>
               {editingId ? 'Update Contact' : 'Create Contact'}
             </Button>
             <Button
@@ -424,7 +432,7 @@ const Contacts: React.FC = () => {
         title="Delete contact"
         description={`Are you sure you want to delete "${deleteTarget?.full_name}"? This action cannot be undone.`}
         confirmLabel="Delete"
-        loading={deleteMutation.isLoading}
+        loading={deleteMutation.isPending}
       />
     </div>
   );

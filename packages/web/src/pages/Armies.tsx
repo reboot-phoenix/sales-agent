@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { useQuery, useMutation, useQueryClient } from 'react-query';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { armies as armiesApi } from '@/lib/api';
 import { ArmyRun, ArmySource } from '@/lib/types';
 import { useToast } from '@/components/ui/toast';
@@ -41,33 +41,47 @@ const Armies: React.FC = () => {
   const { toast } = useToast();
   const [selected, setSelected] = useState<string | null>(null);
 
-  const runs = useQuery('army-runs', () => armiesApi.runs({ limit: 40 }), {
-    // Poll while anything is running so progress is live without freezing the page.
-    refetchInterval: (data: any) =>
-      (data?.runs || []).some((r: ArmyRun) => r.status === 'running' || r.status === 'queued') ? 5000 : 30000,
-    staleTime: 3000,
-  });
-  const sources = useQuery('army-sources', () => armiesApi.sources(), { staleTime: 60000 });
-  const detail = useQuery(['army-run', selected], () => armiesApi.runDetail(selected as string), {
-    enabled: !!selected,
-    refetchInterval: 5000,
-  });
+  const runs = useQuery({
+  queryKey: ['army-runs'],
+  queryFn: () => armiesApi.runs({ limit: 40 }),
+  // Poll while anything is running so progress is live without freezing the page.
+  refetchInterval: (data: any) =>
+  (data?.runs || []).some((r: ArmyRun) => r.status === 'running' || r.status === 'queued') ? 5000 : 30000,
+  staleTime: 3000,
+});
+  const sources = useQuery({
+  queryKey: ['army-sources'],
+  queryFn: () => armiesApi.sources(),
+  staleTime: 60000,
+});
+  const detail = useQuery({
+  queryKey: ['army-run', selected],
+  queryFn: () => armiesApi.runDetail(selected as string),
+  enabled: !!selected,
+  refetchInterval: 5000,
+});
 
-  const start = useMutation((domain: 'jobs' | 'hackathons' | 'colleges') => armiesApi.run(domain), {
-    onSuccess: (data) => {
-      toast({ title: `${DOMAIN_LABEL[data.domain] || data.domain} queued`, description: `Run ${data.run_id}`, variant: 'success' });
-      queryClient.invalidateQueries('army-runs');
-    },
-    onError: (e: Error) => toast({ title: 'Could not start army', description: e.message, variant: 'error' }),
-  });
+  const start = useMutation({
+  mutationFn: (domain: 'jobs' | 'hackathons' | 'colleges') => armiesApi.run(domain),
+  onSuccess: (data) => {
+  toast({ title: `${DOMAIN_LABEL[data.domain] || data.domain} queued`, description: `Run ${data.run_id}`, variant: 'success' });
+  queryClient.invalidateQueries({
+  queryKey: ['army-runs'],
+});
+  },
+  onError: (e: Error) => toast({ title: 'Could not start army', description: e.message, variant: 'error' }),
+});
 
-  const runAll = useMutation(() => armiesApi.runAll(), {
-    onSuccess: () => {
-      toast({ title: 'All three armies queued', description: 'They run concurrently as independent workers.', variant: 'success' });
-      queryClient.invalidateQueries('army-runs');
-    },
-    onError: (e: Error) => toast({ title: 'Could not start armies', description: e.message, variant: 'error' }),
-  });
+  const runAll = useMutation({
+  mutationFn: () => armiesApi.runAll(),
+  onSuccess: () => {
+  toast({ title: 'All three armies queued', description: 'They run concurrently as independent workers.', variant: 'success' });
+  queryClient.invalidateQueries({
+  queryKey: ['army-runs'],
+});
+  },
+  onError: (e: Error) => toast({ title: 'Could not start armies', description: e.message, variant: 'error' }),
+});
 
   if (runs.isLoading) return <PageLoader label="Loading army operations..." />;
   if (runs.isError) return <ErrorState title="Error loading runs" message={(runs.error as Error).message} onRetry={() => runs.refetch()} />;
@@ -88,22 +102,22 @@ const Armies: React.FC = () => {
         <div className="card p-4">
           <div className="mb-2 flex items-center gap-2"><Briefcase className="h-4 w-4" /><h2 className="text-sm font-semibold">Job Army</h2></div>
           <p className="mb-3 text-[12px] text-muted-foreground">Existing India-fresher job fleet + enrichment cascade.</p>
-          <Button size="sm" onClick={() => start.mutate('jobs')} loading={start.isLoading}><Play className="h-3.5 w-3.5" />Run Job Army</Button>
+          <Button size="sm" onClick={() => start.mutate('jobs')} loading={start.isPending}><Play className="h-3.5 w-3.5" />Run Job Army</Button>
         </div>
         <div className="card p-4">
           <div className="mb-2 flex items-center gap-2"><Trophy className="h-4 w-4" /><h2 className="text-sm font-semibold">Hackathon Army</h2></div>
           <p className="mb-3 text-[12px] text-muted-foreground">Discover events, store history, enrich organizers, predict recurrence.</p>
-          <Button size="sm" onClick={() => start.mutate('hackathons')} loading={start.isLoading}><Play className="h-3.5 w-3.5" />Run Hackathon Army</Button>
+          <Button size="sm" onClick={() => start.mutate('hackathons')} loading={start.isPending}><Play className="h-3.5 w-3.5" />Run Hackathon Army</Button>
         </div>
         <div className="card p-4">
           <div className="mb-2 flex items-center gap-2"><GraduationCap className="h-4 w-4" /><h2 className="text-sm font-semibold">College Army</h2></div>
           <p className="mb-3 text-[12px] text-muted-foreground">State-wise discovery + TPO / principal contact enrichment.</p>
-          <Button size="sm" onClick={() => start.mutate('colleges')} loading={start.isLoading}><Play className="h-3.5 w-3.5" />Run College Army</Button>
+          <Button size="sm" onClick={() => start.mutate('colleges')} loading={start.isPending}><Play className="h-3.5 w-3.5" />Run College Army</Button>
         </div>
       </div>
 
       <div className="flex items-center gap-3">
-        <Button onClick={() => runAll.mutate()} loading={runAll.isLoading}><Play className="h-4 w-4" />Run all three concurrently</Button>
+        <Button onClick={() => runAll.mutate()} loading={runAll.isPending}><Play className="h-4 w-4" />Run all three concurrently</Button>
         <span className="text-[12px] text-muted-foreground">Also runs automatically each day at 02:00 local time.</span>
       </div>
 

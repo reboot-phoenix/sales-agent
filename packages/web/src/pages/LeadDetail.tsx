@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
-import { useQuery, useMutation, useQueryClient } from 'react-query';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { leads as leadsApi, admin } from '@/lib/api';
 import { LeadDetail as LeadDetailType, OutreachDraft } from '@/lib/types';
 import { Button } from '@/components/ui/button';
@@ -80,46 +80,55 @@ const LeadDetail: React.FC = () => {
     isLoading,
     error: leadError,
     refetch,
-  } = useQuery(['lead', id], () => leadsApi.get(id!), { enabled: !!id });
+  } = useQuery({
+  queryKey: ['lead', id],
+  queryFn: () => leadsApi.get(id!),
+  enabled: !!id,
+});
 
-  const { data: timelineData } = useQuery(['lead-timeline', id], () => leadsApi.timeline(id!), {
-    enabled: !!id,
-  });
+  const { data: timelineData } = useQuery({
+  queryKey: ['lead-timeline', id],
+  queryFn: () => leadsApi.timeline(id!),
+  enabled: !!id,
+});
 
-  const { data: scoreData } = useQuery(['lead-score', id], () => leadsApi.scoreExplanation(id!), {
-    enabled: !!id,
-  });
+  const { data: scoreData } = useQuery({
+  queryKey: ['lead-score', id],
+  queryFn: () => leadsApi.scoreExplanation(id!),
+  enabled: !!id,
+});
 
-  const { data: usersData } = useQuery('users-list', () => admin.getUsers(), {
-    // /admin/users is admin-only; don't fire it as sales_rep (was a 403 + console error).
-    enabled: !!id && useAuthStore.getState().user?.role === 'admin',
-    retry: false,
-  });
+  const { data: usersData } = useQuery({
+  queryKey: ['users-list'],
+  queryFn: () => admin.getUsers(),
+  // /admin/users is admin-only; don't fire it as sales_rep (was a 403 + console error).
+  enabled: !!id && useAuthStore.getState().user?.role === 'admin',
+  retry: false,
+});
 
-  const { data: providerStatus } = useQuery(
-    'provider-status',
-    () => admin.providerStatus(),
-    { enabled: !!id, staleTime: 60000, retry: false },
-  );
+  const { data: providerStatus } = useQuery({
+  queryKey: ['provider-status'],
+  queryFn: () => admin.providerStatus(),
+  enabled: !!id, staleTime: 60000, retry: false,
+});
   const enrichmentReady = providerStatus?.enrichment as Record<string, boolean> | undefined;
   const sendingReady = providerStatus?.sending;
 
   // Live enrichment lifecycle: poll the persistent job while it is active so
   // the operator sees Queued → Running → Completed/Partial/Failed instead of
   // a fire-and-forget button. Polling stops on terminal states.
-  const { data: enrichmentState } = useQuery(
-    ['lead-enrichment', id],
-    () => leadsApi.enrichment(id!),
-    {
-      enabled: !!id,
-      retry: false,
-      refetchInterval: (data: any) => {
-        const jobs = data?.jobs || [];
-        const active = jobs.some((j: any) => j.status === 'queued' || j.status === 'running');
-        return active ? 4000 : false;
-      },
-    },
-  );
+  const { data: enrichmentState } = useQuery({
+  queryKey: ['lead-enrichment', id],
+  queryFn: () => leadsApi.enrichment(id!),
+  enabled: !!id,
+  retry: false,
+  // v5 passes the whole Query to refetchInterval callbacks.
+  refetchInterval: (query: any) => {
+    const jobs = query.state?.data?.jobs || [];
+    const active = jobs.some((j: any) => j.status === 'queued' || j.status === 'running');
+    return active ? 4000 : false;
+  },
+});
   const activeJob = (enrichmentState?.jobs || []).find((j: any) => j.status === 'queued' || j.status === 'running');
   const lastJob = (enrichmentState?.jobs || [])[0];
 
@@ -129,10 +138,18 @@ const LeadDetail: React.FC = () => {
   // other leads' events must not refetch (was a refetch storm).
   useSSE('/sse/token', (event) => {
     if (shouldRefreshLeadDetail(event, id)) {
-      queryClient.invalidateQueries(['lead', id]);
-      queryClient.invalidateQueries(['lead-timeline', id]);
-      queryClient.invalidateQueries(['lead-score', id]);
-      queryClient.invalidateQueries(['lead-enrichment', id]);
+      queryClient.invalidateQueries({
+  queryKey: ['lead', id],
+});
+      queryClient.invalidateQueries({
+  queryKey: ['lead-timeline', id],
+});
+      queryClient.invalidateQueries({
+  queryKey: ['lead-score', id],
+});
+      queryClient.invalidateQueries({
+  queryKey: ['lead-enrichment', id],
+});
     }
   });
 
@@ -148,68 +165,79 @@ const LeadDetail: React.FC = () => {
   } | null>(null);
   const [sending, setSending] = useState(false);
 
-  const editDraftMutation = useMutation(
-    ({ leadId, draftId, patch }: { leadId: string; draftId: string; patch: { subject?: string; body?: string } }) =>
+  const editDraftMutation = useMutation({
+  mutationFn: ({ leadId, draftId, patch }: { leadId: string; draftId: string; patch: { subject?: string; body?: string } }) =>
       leadsApi.editDraft(leadId, draftId, patch),
-    {
-      onSuccess: () => {
-        queryClient.invalidateQueries(['lead', id]);
-        toast({ title: 'Draft saved', variant: 'success' });
-      },
-      onError: (err) => toast({ title: 'Failed to save draft', description: (err as Error).message, variant: 'error' }),
-    },
-  );
+  onSuccess: () => {
+  queryClient.invalidateQueries({
+  queryKey: ['lead', id],
+});
+  toast({ title: 'Draft saved', variant: 'success' });
+  },
+  onError: (err) => toast({ title: 'Failed to save draft', description: (err as Error).message, variant: 'error' }),
+});
 
-  const doNotContactMutation = useMutation(
-    ({ leadId, value }: { leadId: string; value: boolean }) => leadsApi.setDoNotContact(leadId, value),
-    {
-      onSuccess: () => {
-        queryClient.invalidateQueries(['lead', id]);
-        queryClient.invalidateQueries('dashboard-stats');
-      },
-      onError: (err) => toast({ title: 'Failed to update preference', description: (err as Error).message, variant: 'error' }),
-    },
-  );
+  const doNotContactMutation = useMutation({
+  mutationFn: ({ leadId, value }: { leadId: string; value: boolean }) => leadsApi.setDoNotContact(leadId, value),
+  onSuccess: () => {
+  queryClient.invalidateQueries({
+  queryKey: ['lead', id],
+});
+  queryClient.invalidateQueries({
+  queryKey: ['dashboard-stats'],
+});
+  },
+  onError: (err) => toast({ title: 'Failed to update preference', description: (err as Error).message, variant: 'error' }),
+});
 
-  const assignMutation = useMutation(
-    ({ leadId, userId }: { leadId: string; userId: string | null }) => leadsApi.assign(leadId, userId),
-    {
-      onSuccess: () => {
-        queryClient.invalidateQueries(['lead', id]);
-        setShowAssignModal(false);
-        toast({ title: 'Lead assigned', variant: 'success' });
-      },
-      onError: (err) => toast({ title: 'Assignment failed', description: (err as Error).message, variant: 'error' }),
-    },
-  );
+  const assignMutation = useMutation({
+  mutationFn: ({ leadId, userId }: { leadId: string; userId: string | null }) => leadsApi.assign(leadId, userId),
+  onSuccess: () => {
+  queryClient.invalidateQueries({
+  queryKey: ['lead', id],
+});
+  setShowAssignModal(false);
+  toast({ title: 'Lead assigned', variant: 'success' });
+  },
+  onError: (err) => toast({ title: 'Assignment failed', description: (err as Error).message, variant: 'error' }),
+});
 
-  const enrichMutation = useMutation(
-    ({ leadId, provider }: { leadId: string; provider?: string }) => leadsApi.enrich(leadId, provider),
-    {
-      onSuccess: () => {
-        setExtracting(false);
-        queryClient.invalidateQueries(['lead', id]);
-        queryClient.invalidateQueries(['lead-timeline', id]);
-        queryClient.invalidateQueries(['lead-enrichment', id]);
-        toast({ title: 'HR extraction started', description: 'Watch the live status badge — no need to refresh.', variant: 'success' });
-      },
-      onError: (err) => {
-        setExtracting(false);
-        toast({ title: 'Extraction failed', description: (err as Error).message, variant: 'error' });
-      },
-    },
-  );
+  const enrichMutation = useMutation({
+  mutationFn: ({ leadId, provider }: { leadId: string; provider?: string }) => leadsApi.enrich(leadId, provider),
+  onSuccess: () => {
+  setExtracting(false);
+  queryClient.invalidateQueries({
+  queryKey: ['lead', id],
+});
+  queryClient.invalidateQueries({
+  queryKey: ['lead-timeline', id],
+});
+  queryClient.invalidateQueries({
+  queryKey: ['lead-enrichment', id],
+});
+  toast({ title: 'HR extraction started', description: 'Watch the live status badge — no need to refresh.', variant: 'success' });
+  },
+  onError: (err) => {
+  setExtracting(false);
+  toast({ title: 'Extraction failed', description: (err as Error).message, variant: 'error' });
+  },
+});
 
   // All hooks above the early returns: anything below `if (isLoading) return`
   // renders conditionally and breaks hook order (React #310).
-  const claimMutation = useMutation(() => leadsApi.claim(id!), {
-    onSuccess: () => {
-      queryClient.invalidateQueries(['lead', id]);
-      queryClient.invalidateQueries(['lead-timeline', id]);
-      toast({ title: 'Lead claimed', variant: 'success' });
-    },
-    onError: (e) => toast({ title: 'Claim failed', description: (e as Error).message, variant: 'error' }),
-  });
+  const claimMutation = useMutation({
+  mutationFn: () => leadsApi.claim(id!),
+  onSuccess: () => {
+  queryClient.invalidateQueries({
+  queryKey: ['lead', id],
+});
+  queryClient.invalidateQueries({
+  queryKey: ['lead-timeline', id],
+});
+  toast({ title: 'Lead claimed', variant: 'success' });
+  },
+  onError: (e) => toast({ title: 'Claim failed', description: (e as Error).message, variant: 'error' }),
+});
 
   if (isLoading) return <PageLoader label="Loading lead..." />;
 
@@ -294,8 +322,12 @@ const LeadDetail: React.FC = () => {
 
   const runAction = (fn: Promise<unknown>, successMsg: string) => {
     fn.then(() => {
-      queryClient.invalidateQueries(['lead', id]);
-      queryClient.invalidateQueries(['lead-timeline', id]);
+      queryClient.invalidateQueries({
+  queryKey: ['lead', id],
+});
+      queryClient.invalidateQueries({
+  queryKey: ['lead-timeline', id],
+});
       toast({ title: successMsg, variant: 'success' });
     }).catch((err: Error) => toast({ title: 'Action failed', description: err.message, variant: 'error' }));
   };
@@ -316,8 +348,12 @@ const LeadDetail: React.FC = () => {
     setSending(true);
     leadsApi.send(lead.id, pendingSend.channel as any, pendingSend.draftId)
       .then(() => {
-        queryClient.invalidateQueries(['lead', id]);
-        queryClient.invalidateQueries(['lead-timeline', id]);
+        queryClient.invalidateQueries({
+  queryKey: ['lead', id],
+});
+        queryClient.invalidateQueries({
+  queryKey: ['lead-timeline', id],
+});
         toast({ title: 'Send queued — provider result will update the timeline', variant: 'success' });
         setPendingSend(null);
       })
@@ -341,8 +377,9 @@ const LeadDetail: React.FC = () => {
   };
 
   const assignedUser = users.find((u: any) => u.id === lead.assigned_to);
-  const currentUserId = useAuthStore.getState().user?.id;
-  const isAdmin = useAuthStore.getState().user?.role === 'admin';
+  // Selector form (not getState()) so ownership UI re-renders after auth changes.
+  const currentUserId = useAuthStore((s) => s.user?.id);
+  const isAdmin = useAuthStore((s) => s.user?.role === 'admin');
   const shortMail = (v: unknown) => String(v).split('@')[0];
   const claimedEmail = (lead as any).claimed_by_email;
   const assignedEmail = assignedUser?.email || (lead as any).assigned_to_email;
@@ -409,7 +446,7 @@ const ENUM_LIKE_KEYS = new Set([
                 </p>
               </div>
               <div className="flex flex-wrap gap-2">
-                <Button onClick={handleEnrich} loading={extracting || enrichMutation.isLoading} variant="secondary" title="One-click enrich: OSINT → Snov → ContactOut → Apollo automatically">
+                <Button onClick={handleEnrich} loading={extracting || enrichMutation.isPending} variant="secondary" title="One-click enrich: OSINT → Snov → ContactOut → Apollo automatically">
                   <Sparkles className="h-4 w-4" />
                   {extracting ? 'Enriching…' : 'Enrich'}
                 </Button>
@@ -423,7 +460,7 @@ const ENUM_LIKE_KEYS = new Set([
                   </span>
                 ) : null}
                 {!(lead as any).claimed_by && !lead.assigned_to && (
-                  <Button onClick={() => setConfirmStep({ title: 'Claim this lead?', description: `${lead.company_name || 'This lead'}${lead.job_title ? ` · ${lead.job_title}` : ''} becomes yours instantly and leaves the shared claim pool. Another admin can reassign it later.`, confirmLabel: 'Claim lead', run: () => claimMutation.mutate() })} loading={claimMutation.isLoading} variant="outline">
+                  <Button onClick={() => setConfirmStep({ title: 'Claim this lead?', description: `${lead.company_name || 'This lead'}${lead.job_title ? ` · ${lead.job_title}` : ''} becomes yours instantly and leaves the shared claim pool. Another admin can reassign it later.`, confirmLabel: 'Claim lead', run: () => claimMutation.mutate() })} loading={claimMutation.isPending} variant="outline">
                     <UserPlus className="h-4 w-4" />
                     Claim Lead
                   </Button>
@@ -720,7 +757,7 @@ const ENUM_LIKE_KEYS = new Set([
             <Switch
               checked={lead.do_not_contact}
               onCheckedChange={handleDoNotContactChange}
-              disabled={doNotContactMutation.isLoading}
+              disabled={doNotContactMutation.isPending}
             />
           </div>
           {doNotContactMutation.isError && (
@@ -772,10 +809,10 @@ const ENUM_LIKE_KEYS = new Set([
                         />
                       </div>
                       <div className="flex gap-2">
-                        <Button onClick={saveEditing} loading={editDraftMutation.isLoading}>
-                          {editDraftMutation.isLoading ? 'Saving…' : 'Save Draft'}
+                        <Button onClick={saveEditing} loading={editDraftMutation.isPending}>
+                          {editDraftMutation.isPending ? 'Saving…' : 'Save Draft'}
                         </Button>
-                        <Button onClick={() => { clearBackup(draft.id); setEditing(null); }} variant="outline" disabled={editDraftMutation.isLoading}>
+                        <Button onClick={() => { clearBackup(draft.id); setEditing(null); }} variant="outline" disabled={editDraftMutation.isPending}>
                           Cancel
                         </Button>
                       </div>

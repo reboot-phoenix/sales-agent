@@ -25,8 +25,15 @@ async def requeue_or_dlq(
     redis_client: redis.Redis,
     queue_name: str,
     payload: dict[str, Any] | None,
+    raw_msg: str | None = None,
 ) -> str:
-    """Requeue a failed job or dead-letter it. Returns 'requeued', 'dlq' or 'dropped'."""
+    """Requeue a failed job or dead-letter it. Returns 'requeued', 'dlq' or 'dropped'.
+
+    If raw_msg is given, the popped copy is acked from {queue}:processing only
+    AFTER the requeue/DLQ copy is safely written — never before. This closes the
+    loss window where a crash between ack and requeue left no copy anywhere (the
+    copy in :processing is what reclaim_processing restores on the next boot).
+    """
     if not isinstance(payload, dict):
         return "dropped"  # nothing parseable to retry (e.g. brpop itself failed)
     attempts = int(payload.get("_attempts", 0) or 0) + 1
@@ -34,9 +41,13 @@ async def requeue_or_dlq(
     if attempts >= MAX_ATTEMPTS:
         await redis_client.lpush(f"{queue_name}:dlq", json.dumps(payload))
         logger.error(f"Job dead-lettered to {queue_name}:dlq after {attempts} attempts: {payload.get('lead_id')}")
+        if raw_msg is not None:
+            await ack(redis_client, queue_name, raw_msg)
         return "dlq"
     await redis_client.lpush(queue_name, json.dumps(payload))
     logger.warning(f"Job requeued to {queue_name} (attempt {attempts}/{MAX_ATTEMPTS}): {payload.get('lead_id')}")
+    if raw_msg is not None:
+        await ack(redis_client, queue_name, raw_msg)
     return "requeued"
 
 
@@ -292,17 +303,16 @@ async def run_queue_consumer(
         except Exception as e:
             logger.error(f"Consumer error in {queue_name}: {e}")
             try:
-                # Ack first so the requeue/DLQ copy is the ONLY copy.
-                if raw_msg is not None:
-                    await ack(redis_client, queue_name, raw_msg)
-                await requeue_or_dlq(redis_client, queue_name, payload)
+                # requeue_or_dlq writes the retry/DLQ copy FIRST and only then
+                # acks, so a failure in between still leaves the :processing
+                # copy for reclaim_processing to restore on the next boot.
+                await requeue_or_dlq(redis_client, queue_name, payload, raw_msg)
             except Exception as dlq_err:  # noqa: BLE001
                 # Losing this job silently defeats the durability work:
-                # ack already removed it from :processing, so if the requeue
-                # or DLQ write failed there is now no copy anywhere. Say so
-                # at ERROR with the payload id so an operator can recover it.
+                # if even the requeue/DLQ write failed there may be no copy
+                # outside :processing. Say so at ERROR so an operator can recover.
                 logger.error(
-                    f"JOB LOST in {queue_name}: acked but requeue/DLQ failed ({dlq_err}); "
-                    f"payload={str(payload)[:200]}"
+                    f"REQUEUE/DLQ FAILED in {queue_name} ({dlq_err}); "
+                    f"copy remains in :processing for reclaim: payload={str(payload)[:200]}"
                 )
             await asyncio.sleep(5)

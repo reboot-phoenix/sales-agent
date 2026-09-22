@@ -289,17 +289,23 @@ class SourceAdapter(abc.ABC):
         duplicates = 0
         for rec in records:
             try:
+                fetched = rec.fetched_at
+                if isinstance(fetched, str):
+                    from datetime import datetime as _dt
+                    try:
+                        fetched = _dt.fromisoformat(fetched)
+                    except ValueError:
+                        pass
                 status = await self._execute_on(handle,
                     """
                     INSERT INTO raw_discovery_records
                       (run_id, domain, source, source_url, checksum, payload, status, fetched_at)
-                    VALUES ($1, $2, $3, $4, $5, $6::jsonb, 'stored', $7::timestamptz)
+                    VALUES ($1, $2, $3, $4, $5, $6::jsonb, 'stored', $7)
                     ON CONFLICT (domain, source, checksum) DO NOTHING
                     """,
                     run_id, self.domain, self.name, rec.source_url, rec.checksum(),
-                    json.dumps(rec.payload, default=str), rec.fetched_at,
+                    json.dumps(rec.payload, default=str), fetched,
                 )
-                # asyncpg returns 'INSERT 0 1' on insert, 'INSERT 0 0' on conflict.
                 if str(status).endswith(" 1"):
                     stored += 1
                 else:

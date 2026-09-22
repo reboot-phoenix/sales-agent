@@ -70,56 +70,67 @@ async def recompute_lead_score(db_pool, lead_id: str, pipeline_stage: str | None
 
     Mirrors recomputeLeadScore in scoring.ts.
     If pipeline_stage is provided, updates the pipeline_stage column atomically.
+
+    Accepts either an asyncpg Pool or an asyncpg Connection: call sites that
+    already hold a connection (normalizer.insert_lead scores the lead inside
+    its own transaction) pass the connection straight through.
     """
-    async with db_pool.acquire() as conn:
-        row = await conn.fetchrow(
-            """
-            SELECT
-              hc.full_name as hr_name,
-              hc.personal_email as hr_personal_email,
-              hc.personal_mobile as hr_personal_mobile,
-              hc.linkedin_url as hr_linkedin_url,
-              c.default_email as company_default_email,
-              c.default_phone as company_default_phone,
-              jp.salary_range, jp.description as job_description, jp.job_url,
-              l.email_status, l.whatsapp_status
-            FROM leads l
-            JOIN companies c ON l.company_id = c.id
-            LEFT JOIN hr_contacts hc ON l.hr_contact_id = hc.id
-            JOIN job_postings jp ON l.job_posting_id = jp.id
-            WHERE l.id = $1
-            """,
-            lead_id,
-        )
+    if hasattr(db_pool, "acquire"):
+        async with db_pool.acquire() as conn:
+            return await _recompute_lead_score_conn(conn, lead_id, pipeline_stage)
+    return await _recompute_lead_score_conn(db_pool, lead_id, pipeline_stage)
 
-        if not row:
-            return 0
 
-        result = calculate_score({
-            "hr_name": row["hr_name"],
-            "hr_personal_email": row["hr_personal_email"],
-            "hr_personal_mobile": row["hr_personal_mobile"],
-            "hr_linkedin_url": row["hr_linkedin_url"],
-            "company_default_email": row["company_default_email"],
-            "company_default_phone": row["company_default_phone"],
-            "salary_range": row["salary_range"],
-            "job_description": row["job_description"],
-            "job_url": row["job_url"],
-            "email_status": row["email_status"],
-            "whatsapp_status": row["whatsapp_status"],
-        })
+async def _recompute_lead_score_conn(conn, lead_id: str, pipeline_stage: str | None = None) -> int:
+    """Score computation on an existing connection (pool or caller-owned)."""
+    row = await conn.fetchrow(
+        """
+        SELECT
+          hc.full_name as hr_name,
+          hc.personal_email as hr_personal_email,
+          hc.personal_mobile as hr_personal_mobile,
+          hc.linkedin_url as hr_linkedin_url,
+          c.default_email as company_default_email,
+          c.default_phone as company_default_phone,
+          jp.salary_range, jp.description as job_description, jp.job_url,
+          l.email_status, l.whatsapp_status
+        FROM leads l
+        JOIN companies c ON l.company_id = c.id
+        LEFT JOIN hr_contacts hc ON l.hr_contact_id = hc.id
+        JOIN job_postings jp ON l.job_posting_id = jp.id
+        WHERE l.id = $1
+        """,
+        lead_id,
+    )
 
-        set_clauses = ["lead_score = $1", "updated_at = NOW()"]
-        values: list = [result["score"]]
+    if not row:
+        return 0
 
-        if pipeline_stage:
-            values.append(pipeline_stage)
-            set_clauses.append(f"pipeline_stage = ${len(values)}")
+    result = calculate_score({
+        "hr_name": row["hr_name"],
+        "hr_personal_email": row["hr_personal_email"],
+        "hr_personal_mobile": row["hr_personal_mobile"],
+        "hr_linkedin_url": row["hr_linkedin_url"],
+        "company_default_email": row["company_default_email"],
+        "company_default_phone": row["company_default_phone"],
+        "salary_range": row["salary_range"],
+        "job_description": row["job_description"],
+        "job_url": row["job_url"],
+        "email_status": row["email_status"],
+        "whatsapp_status": row["whatsapp_status"],
+    })
 
-        values.append(lead_id)
-        await conn.execute(
-            f"UPDATE leads SET {', '.join(set_clauses)} WHERE id = ${len(values)}",
-            *values,
-        )
+    set_clauses = ["lead_score = $1", "updated_at = NOW()"]
+    values: list = [result["score"]]
 
-        return result["score"]
+    if pipeline_stage:
+        values.append(pipeline_stage)
+        set_clauses.append(f"pipeline_stage = ${len(values)}")
+
+    values.append(lead_id)
+    await conn.execute(
+        f"UPDATE leads SET {', '.join(set_clauses)} WHERE id = ${len(values)}",
+        *values,
+    )
+
+    return result["score"]

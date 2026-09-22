@@ -66,6 +66,14 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    # /liveness on purpose, not /readiness: restarting the container while only
+    # Postgres is down would fix nothing and hammer the DB with reconnects.
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/liveness').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
     ports:
       # Loopback only. Everything that needs the API reaches it over the compose
       # network (web -> nginx -> api); publishing 3000 on 0.0.0.0 exposed the API
@@ -84,6 +92,12 @@ services:
     depends_on:
       - api
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:80/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
 
   workers:
     build:
@@ -114,6 +128,14 @@ services:
     ports:
       - "127.0.0.1:8000:8000"
     restart: unless-stopped
+    # Workers' /health pings Redis AND Postgres and reports per-service state,
+    # so it doubles as a readiness signal for this service.
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=4).status==200 else 1)"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
     # NOTE: there is deliberately NO bind mount of ./packages/scrapers here.
     # It used to mount the source tree over the image's /app, which means the
     # production container ran whatever happened to be on the host filesystem --

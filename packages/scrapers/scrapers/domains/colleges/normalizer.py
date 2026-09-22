@@ -83,6 +83,12 @@ def normalize_college(raw: dict[str, Any]) -> Optional[dict[str, Any]]:
     if not name:
         return None
     website = clean_text(raw.get("website_url") or raw.get("website") or raw.get("url"))
+    # NIRF-style tables put the official-site link in the institute cell; captured as links[].
+    if not website and isinstance(raw.get("links"), list):
+        for href in raw["links"]:
+            if href and "http" in href:
+                website = href
+                break
     if website and not website.startswith("http"):
         website = "https://" + website.lstrip("/")
     email = clean_text(raw.get("official_email") or raw.get("email"))

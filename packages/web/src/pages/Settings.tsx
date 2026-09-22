@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { useQuery, useMutation, useQueryClient } from 'react-query';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 import { admin } from '@/lib/api';
 import { useAuthStore } from '@/stores/auth';
@@ -128,26 +128,36 @@ const Settings: React.FC = () => {
 
   const isAdmin = user?.role === 'admin';
 
-  const { data: keyData, isLoading, refetch } = useQuery('api-keys', () => admin.getApiKeys(), {
-    enabled: isAdmin,
-    retry: false,
-  });
-  const { data: sourcesData } = useQuery('sources-enabled', () => admin.getSetting('sources_enabled'), {
-    enabled: isAdmin,
-    retry: false,
-  });
-  const { data: weightsData } = useQuery('scoring-weights', () => admin.getSetting('scoring_weights'), {
-    enabled: isAdmin,
-    retry: false,
-  });
-  const { data: cronData } = useQuery('cron-schedule', () => admin.getSetting('cron_schedule'), {
-    enabled: isAdmin,
-    retry: false,
-  });
-  const { data: healthData } = useQuery('source-health', () => admin.sourceHealth(), {
-    enabled: isAdmin,
-    retry: false,
-  });
+  const { data: keyData, isLoading, refetch } = useQuery({
+  queryKey: ['api-keys'],
+  queryFn: () => admin.getApiKeys(),
+  enabled: isAdmin,
+  retry: false,
+});
+  const { data: sourcesData } = useQuery({
+  queryKey: ['sources-enabled'],
+  queryFn: () => admin.getSetting('sources_enabled'),
+  enabled: isAdmin,
+  retry: false,
+});
+  const { data: weightsData } = useQuery({
+  queryKey: ['scoring-weights'],
+  queryFn: () => admin.getSetting('scoring_weights'),
+  enabled: isAdmin,
+  retry: false,
+});
+  const { data: cronData } = useQuery({
+  queryKey: ['cron-schedule'],
+  queryFn: () => admin.getSetting('cron_schedule'),
+  enabled: isAdmin,
+  retry: false,
+});
+  const { data: healthData } = useQuery({
+  queryKey: ['source-health'],
+  queryFn: () => admin.sourceHealth(),
+  enabled: isAdmin,
+  retry: false,
+});
 
   useEffect(() => {
     const handler = (e: BeforeUnloadEvent) => {
@@ -169,52 +179,67 @@ const Settings: React.FC = () => {
     return false;
   };
 
-  const saveMutation = useMutation((keys: Record<string, string>) => admin.updateApiKeys(keys), {
-    onSuccess: () => {
-      queryClient.invalidateQueries('api-keys');
-      setApiKeysDirty(false);
-      toast({ title: 'API keys saved', description: 'Keys are encrypted at rest.', variant: 'success' });
-    },
-    onError: (error: any) => {
-      if (!handleAuthError(error)) {
-        setApiKeysDirty(false);
-        toast({ title: 'Failed to save API keys', description: error?.message || 'Unknown error', variant: 'error' });
-      }
-    },
-  });
+  const saveMutation = useMutation({
+  mutationFn: (keys: Record<string, string>) => admin.updateApiKeys(keys),
+  onSuccess: () => {
+  queryClient.invalidateQueries({
+  queryKey: ['api-keys'],
+});
+  setApiKeysDirty(false);
+  toast({ title: 'API keys saved', description: 'Keys are encrypted at rest.', variant: 'success' });
+  },
+  onError: (error: any) => {
+  if (!handleAuthError(error)) {
+  setApiKeysDirty(false);
+  toast({ title: 'Failed to save API keys', description: error?.message || 'Unknown error', variant: 'error' });
+  }
+  },
+});
 
-  const saveSettingsMutation = useMutation((settings: Record<string, any>) => admin.updateSettings(settings), {
-    onSuccess: () => {
-      queryClient.invalidateQueries('sources-enabled');
-      queryClient.invalidateQueries('scoring-weights');
-      queryClient.invalidateQueries('cron-schedule');
-      setSourcesDirty(false);
-      setScoringDirty(false);
-      setCronDirty(false);
-      toast({ title: 'Settings saved', variant: 'success' });
-    },
-    onError: (error: any) => {
-      if (!handleAuthError(error)) {
-        setSourcesDirty(false);
-        setScoringDirty(false);
-        setCronDirty(false);
-        toast({ title: 'Failed to save settings', description: error?.message || 'Unknown error', variant: 'error' });
-      }
-    },
-  });
+  const saveSettingsMutation = useMutation({
+  mutationFn: (settings: Record<string, any>) => admin.updateSettings(settings),
+  onSuccess: () => {
+  queryClient.invalidateQueries({
+  queryKey: ['sources-enabled'],
+});
+  queryClient.invalidateQueries({
+  queryKey: ['scoring-weights'],
+});
+  queryClient.invalidateQueries({
+  queryKey: ['cron-schedule'],
+});
+  setSourcesDirty(false);
+  setScoringDirty(false);
+  setCronDirty(false);
+  toast({ title: 'Settings saved', variant: 'success' });
+  },
+  onError: (error: any) => {
+  if (!handleAuthError(error)) {
+  setSourcesDirty(false);
+  setScoringDirty(false);
+  setCronDirty(false);
+  toast({ title: 'Failed to save settings', description: error?.message || 'Unknown error', variant: 'error' });
+  }
+  },
+});
 
-  const triggerRunMutation = useMutation((sources?: string[]) => admin.triggerRun(sources), {
-    onSuccess: () => {
-      queryClient.invalidateQueries('dashboard-runs');
-      queryClient.invalidateQueries('dashboard-stats');
-      toast({ title: 'Scrape run triggered', description: 'A scrape has been queued across enabled sources.', variant: 'success' });
-    },
-    onError: (error: any) => {
-      if (!handleAuthError(error)) {
-        toast({ title: 'Failed to trigger run', description: error?.message || 'Unknown error', variant: 'error' });
-      }
-    },
-  });
+  const triggerRunMutation = useMutation({
+  mutationFn: (sources?: string[]) => admin.triggerRun(sources),
+  onSuccess: () => {
+  queryClient.invalidateQueries({
+  queryKey: ['dashboard-runs'],
+});
+  queryClient.invalidateQueries({
+  queryKey: ['dashboard-stats'],
+});
+  toast({ title: 'Scrape run triggered', description: 'A scrape has been queued across enabled sources.', variant: 'success' });
+  },
+  onError: (error: any) => {
+  if (!handleAuthError(error)) {
+  toast({ title: 'Failed to trigger run', description: error?.message || 'Unknown error', variant: 'error' });
+  }
+  },
+});
 
   if (isLoading) return <PageLoader label="Loading settings..." />;
 
@@ -331,9 +356,9 @@ const Settings: React.FC = () => {
           <p className="mb-4 text-[13px] text-muted-foreground">
             Manually trigger a scrape run across all enabled sources. This bypasses the cron schedule.
           </p>
-          <Button onClick={handleTriggerRun} loading={triggerRunMutation.isLoading} variant="default">
+          <Button onClick={handleTriggerRun} loading={triggerRunMutation.isPending} variant="default">
             <Play className="h-4 w-4" />
-            {triggerRunMutation.isLoading ? 'Starting…' : 'Run Now'}
+            {triggerRunMutation.isPending ? 'Starting…' : 'Run Now'}
           </Button>
           {triggerRunMutation.isError && (
             <p className="mt-3 text-[13px] text-destructive">
@@ -394,9 +419,9 @@ const Settings: React.FC = () => {
                 Failed to save: {(saveMutation.error as Error).message}
               </span>
             )}
-            <Button onClick={handleSaveApiKeys} loading={saveMutation.isLoading}>
+            <Button onClick={handleSaveApiKeys} loading={saveMutation.isPending}>
               <Save className="h-4 w-4" />
-              {saveMutation.isLoading ? 'Saving…' : 'Save Changes'}
+              {saveMutation.isPending ? 'Saving…' : 'Save Changes'}
             </Button>
           </div>
         </CardContent>
@@ -435,9 +460,9 @@ const Settings: React.FC = () => {
             ))}
           </form>
           <div className="mt-6 flex items-center justify-end gap-3">
-            <Button onClick={handleSaveSources} loading={saveSettingsMutation.isLoading} disabled={!sourcesDirty}>
+            <Button onClick={handleSaveSources} loading={saveSettingsMutation.isPending} disabled={!sourcesDirty}>
               <Save className="h-4 w-4" />
-              {saveSettingsMutation.isLoading ? 'Saving…' : 'Save Sources'}
+              {saveSettingsMutation.isPending ? 'Saving…' : 'Save Sources'}
             </Button>
           </div>
         </CardContent>
@@ -473,9 +498,9 @@ const Settings: React.FC = () => {
             ))}
           </form>
           <div className="mt-6 flex items-center justify-end gap-3">
-            <Button onClick={handleSaveScoring} loading={saveSettingsMutation.isLoading} disabled={!scoringDirty}>
+            <Button onClick={handleSaveScoring} loading={saveSettingsMutation.isPending} disabled={!scoringDirty}>
               <Save className="h-4 w-4" />
-              {saveSettingsMutation.isLoading ? 'Saving…' : 'Save Scoring'}
+              {saveSettingsMutation.isPending ? 'Saving…' : 'Save Scoring'}
             </Button>
           </div>
         </CardContent>
@@ -508,9 +533,9 @@ const Settings: React.FC = () => {
                 className="font-mono"
               />
             </div>
-            <Button onClick={handleSaveCron} loading={saveSettingsMutation.isLoading} disabled={!cronDirty}>
+            <Button onClick={handleSaveCron} loading={saveSettingsMutation.isPending} disabled={!cronDirty}>
               <Save className="h-4 w-4" />
-              {saveSettingsMutation.isLoading ? 'Saving…' : 'Save Note'}
+              {saveSettingsMutation.isPending ? 'Saving…' : 'Save Note'}
             </Button>
           </form>
         </CardContent>

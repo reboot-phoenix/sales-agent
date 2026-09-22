@@ -17,6 +17,7 @@ import logging
 from typing import Any, Awaitable, Callable, Optional
 
 from .email_verify import EmailVerification, verify_email, verification_sql_status
+from .normalize import now_iso
 
 logger = logging.getLogger(__name__)
 
@@ -121,6 +122,51 @@ async def persist_verdict(conn, table: str, contact_id: Any, verdict: EmailVerif
             "previous_grade_kept": grade is None,
         }),
     )
+
+
+async def record_waterfall_verdicts(conn, domain: str, entity_id: str, waterfall_result: dict) -> int:
+    """Persist SMTP verdicts the contact waterfall already established.
+
+    The waterfall verifies every candidate it returns (and drops hard
+    rejections), so re-probing those same addresses in the generic verify pass
+    would double the SMTP traffic against the same mail servers. Match the rows
+    that were just upserted and write the carried verdict through the same
+    persist path, so ``verified`` rows keep their grade and provenance without
+    a second handshake.
+
+    Returns the number of rows updated. Never raises on per-row trouble: a
+    mismatched row is skipped, not fatal.
+    """
+    table, column = _sql_table(domain)
+    candidates = waterfall_result.get("candidates") or []
+    if not candidates:
+        return 0
+    updated = 0
+    for cand in candidates:
+        email = (cand.get("email") or "").strip()
+        if not email or not cand.get("verified"):
+            # Only explicit acceptances carry a durable verdict; unverified
+            # candidates correctly stay on the generic verify pass's queue.
+            continue
+        rows = await conn.fetch(
+            f"SELECT id FROM {table} WHERE {column} = $1 AND lower(email) = lower($2)",
+            entity_id, email,
+        )  # noqa: S608 - identifiers from CONTACT_TABLES constants
+        for row in rows:
+            try:
+                await persist_verdict(
+                    conn, table, row["id"],
+                    EmailVerification(
+                        email=email, status="verified",
+                        reason=f"verified by osint waterfall ({cand.get('layer', 'unknown')})",
+                        grade="B" if cand.get("role_address") else "A",
+                        checked_at=now_iso(),
+                    ),
+                )
+                updated += 1
+            except Exception as e:  # noqa: BLE001 - one row must not abort the sweep
+                logger.debug("waterfall verdict persist failed for %s: %s", email, e)
+    return updated
 
 
 async def reverify_stale_contacts(conn, *, limit: int = 50) -> dict[str, int]:

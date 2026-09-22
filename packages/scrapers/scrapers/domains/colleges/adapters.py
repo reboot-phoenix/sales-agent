@@ -41,6 +41,8 @@ _COLUMN_HINTS: tuple[tuple[str, str], ...] = (
     ("institution name", "name"),
     ("university name", "name"),
     ("institute name", "name"),
+    ("name of institute", "name"),
+    ("institute", "name"),
     ("college name", "name"),
     ("name of", "name"),
     ("institution", "name"),
@@ -117,13 +119,18 @@ def parse_html_tables(html: str, source_url: str, default_state: Optional[str] =
                 if not text:
                     continue
                 link = cell.find("a", href=True)
-                if column == "website_url" and link:
-                    text = link["href"]
-                elif not record.get("website_url") and link and "http" in (link.get("href") or ""):
-                    # A name cell often links the official site; keep it as a source.
+                # Always capture links from ALL cells — government ranking tables put the
+                # official-site URL in the institute/name cell, not in a dedicated website column.
+                if link and "http" in (link.get("href") or ""):
+                    href = link["href"]
                     record.setdefault("links", [])
-                    if link["href"] not in record["links"]:
-                        record["links"].append(link["href"])
+                    if href not in record["links"]:
+                        record["links"].append(href)
+                    if column == "name" and not record.get("website_url"):
+                        # First http link in the name cell is usually the official site.
+                        record["website_url"] = href
+                    elif column == "website_url":
+                        text = href
                 record[column] = text
             record.update(extras)
             if record.get("name"):

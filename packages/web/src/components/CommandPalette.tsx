@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { useQuery } from 'react-query';
+import { useQuery, keepPreviousData } from '@tanstack/react-query';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   Search, LayoutDashboard, Users, Building2, Contact, GitMerge, TrendingUp,
@@ -84,11 +84,11 @@ export function CommandPalette() {
   // applies the same RBAC as the domain pages, so the palette cannot surface a
   // lead the corresponding page would hide.
   const needle = q.trim();
-  const { data: searchData, isFetching: searching } = useQuery(
-    ['palette-search', needle],
-    () => searchAll.query(needle, ['jobs', 'hackathons', 'colleges']),
-    { enabled: needle.length >= 2, staleTime: 15000, keepPreviousData: true },
-  );
+  const { data: searchData, isFetching: searching } = useQuery({
+  queryKey: ['palette-search', needle],
+  queryFn: () => searchAll.query(needle, ['jobs', 'hackathons', 'colleges']),
+  enabled: needle.length >= 2, staleTime: 15000, placeholderData: keepPreviousData,
+});
 
   const entityResults = useMemo<Cmd[]>(() => {
     const results = (searchData as any)?.results;
