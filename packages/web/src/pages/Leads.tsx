@@ -94,7 +94,8 @@ const Leads: React.FC = () => {
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [assignLead, setAssignLead] = useState<Lead | null>(null);
   const [memberSearch, setMemberSearch] = useState('');
-  const isAdmin = useAuthStore.getState().user?.role === 'admin';
+  // Selector form (not getState()) so admin controls re-render after a role change.
+  const isAdmin = useAuthStore((s) => s.user?.role === 'admin');
   const { data: membersData } = useQuery({
   queryKey: ['team-members'],
   queryFn: () => admin.teamMembers(),

@@ -9,6 +9,7 @@ import { errorHandler } from './middleware/error-handler';
 import routes from './routes';
 import { env } from './utils/env';
 import { requestLogger, getPrometheusMetrics } from './utils/logging';
+import { fullHealthReport, livenessReport } from './utils/health';
 
 const server = async () => {
   const app = Fastify({
@@ -78,11 +79,18 @@ const server = async () => {
     return getPrometheusMetrics();
   });
 
-  app.get('/health', async () => ({
-    status: 'ok',
-    timestamp: new Date().toISOString(),
-    uptime_seconds: Math.floor(process.uptime()),
-  }));
+  // Probe endpoints (master-prompt §39). /liveness never touches dependencies so a
+  // DB blip cannot cause restart storms; /readiness gates traffic on DB+Redis and
+  // returns 503 so a TCP-level healthcheck (or any non-200 probe) fails closed.
+  app.get('/liveness', async () => livenessReport());
+  app.get('/readiness', async (_req, reply) => {
+    const report = await fullHealthReport();
+    if (report.status !== 'ok') {
+      return reply.status(503).send(report);
+    }
+    return report;
+  });
+  app.get('/health', async () => fullHealthReport());
 
   await app.register(routes, { prefix: '/api' });
 

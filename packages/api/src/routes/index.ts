@@ -16,9 +16,13 @@ import { analyticsRoutes } from './analytics';
 import { searchRoutes } from './search';
 import { outreachRoutes } from './outreach';
 import { savedFiltersRoutes } from './savedFilters';
+import { fullHealthReport } from '../utils/health';
 
 const routes: FastifyPluginAsync = async (fastify) => {
-  fastify.get('/health', async () => ({ status: 'ok', timestamp: new Date().toISOString() }));
+  // The dependency-aware probes live at the ROOT level (server.ts: /health,
+  // /readiness, /liveness) where orchestrators look. This legacy /api/health is
+  // kept as an alias so existing dashboards and the web client don't break.
+  fastify.get('/health', async () => fullHealthReport());
 
   fastify.register(authRoutes, { prefix: '/auth' });
   fastify.register(leadsRoutes, { prefix: '/leads' });

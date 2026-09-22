@@ -377,8 +377,9 @@ const LeadDetail: React.FC = () => {
   };
 
   const assignedUser = users.find((u: any) => u.id === lead.assigned_to);
-  const currentUserId = useAuthStore.getState().user?.id;
-  const isAdmin = useAuthStore.getState().user?.role === 'admin';
+  // Selector form (not getState()) so ownership UI re-renders after auth changes.
+  const currentUserId = useAuthStore((s) => s.user?.id);
+  const isAdmin = useAuthStore((s) => s.user?.role === 'admin');
   const shortMail = (v: unknown) => String(v).split('@')[0];
   const claimedEmail = (lead as any).claimed_by_email;
   const assignedEmail = assignedUser?.email || (lead as any).assigned_to_email;

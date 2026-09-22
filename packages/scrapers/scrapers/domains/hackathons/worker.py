@@ -117,11 +117,17 @@ async def recompute_hackathon_quality(conn, hackathon_id: str) -> dict[str, Any]
             "outreach_score": assessment.score, "outreach_priority": assessment.priority}
 
 
-async def _fetch_and_store_contacts(conn, hackathon_id: str, urls: list[str], *, limit: int = 3) -> int:
-    """Fetch public pages and store any role contacts found. Returns rows inserted."""
+async def _fetch_and_store_contacts(conn, hackathon_id: str, urls: list[str], *, limit: int = 3) -> tuple[int, list[str]]:
+    """Fetch public pages and store any role contacts found.
+
+    Returns (rows inserted, real emails seen on those pages) — the harvested
+    addresses feed the waterfall's pattern-inference layer.
+    """
     from ...utils.http_client import fetch
+    from ..contact_waterfall import EMAIL_IN_TEXT
 
     inserted = 0
+    harvested: list[str] = []
     for url in urls[:limit]:
         try:
             resp = await fetch(url, timeout=25, min_engine="httpx", max_engine="playwright")
@@ -130,6 +136,7 @@ async def _fetch_and_store_contacts(conn, hackathon_id: str, urls: list[str], *,
             continue
         if resp.status != 200 or not resp.text:
             continue
+        harvested.extend(EMAIL_IN_TEXT.findall(resp.text))
         for contact in extract_role_contacts(resp.text, url):
             contact["contact_source"] = "hackathon_page"
             try:
@@ -137,7 +144,49 @@ async def _fetch_and_store_contacts(conn, hackathon_id: str, urls: list[str], *,
                     inserted += 1
             except Exception as e:  # noqa: BLE001
                 logger.debug("contact upsert failed: %s", e)
-    return inserted
+    return inserted, harvested
+
+
+async def _waterfall_fallback(conn, hackathon_id: str, *, website_url: Optional[str]) -> tuple[int, dict]:
+    """Free OSINT waterfall for organizer contacts (runs before paid providers).
+
+    Layer R probes the organizer domain for role inboxes (info@, contact@,
+    community@…), Layer D scrapes SERP snippets for published addresses; every
+    candidate is SMTP-verified and hard rejections are dropped, so only live
+    mailboxes reach the upsert.
+    """
+    from ..contact_waterfall import run_contact_waterfall
+
+    inserted = 0
+    report: dict[str, Any] = {}
+    try:
+        wf = await run_contact_waterfall(website_url, role_limit=5)
+        report = wf.get("report", {})
+        for cand in wf.get("candidates", []):
+            if not cand.get("email"):
+                continue
+            contact = {
+                "email": cand["email"],
+                "full_name": None,  # a shared/role inbox is not a person
+                "designation": None,
+                "contact_source": f"osint_waterfall_{cand.get('layer', 'unknown')}",
+                "source_url": website_url,
+                "confidence_score": cand.get("confidence", 40),
+                "verification_status": "verified" if cand.get("verified") else "unverified",
+            }
+            try:
+                if await _upsert_hackathon_contact(conn, hackathon_id, contact):
+                    inserted += 1
+            except Exception as e:  # noqa: BLE001
+                logger.debug("waterfall contact upsert failed: %s", e)
+        # The waterfall already SMTP-verified every candidate it returned;
+        # record those verdicts so the verify pass does not re-probe them.
+        if inserted:
+            from ..verification import record_waterfall_verdicts
+            await record_waterfall_verdicts(conn, "hackathons", hackathon_id, wf)
+    except Exception as e:  # noqa: BLE001 — the waterfall must never fail a run
+        report = {"errors": [str(e)[:200]]}
+    return inserted, report
 
 
 async def _provider_fallback(conn, hackathon_id: str, *, website_url: Optional[str]) -> tuple[int, list[str]]:
@@ -177,13 +226,21 @@ async def enrich_hackathon_contacts(conn, limit: int = 40, *, fetch_pages: bool 
         if not fetch_pages or not urls:
             continue
         before = inserted
-        inserted += await _fetch_and_store_contacts(conn, str(row["id"]), urls, limit=2)
+        page_inserted, _harvested = await _fetch_and_store_contacts(conn, str(row["id"]), urls, limit=2)
+        inserted += page_inserted
         if inserted == before:
             # Nothing on the event page: try the organizer's own site layout.
             from ..contact_discovery import discover_contact_urls
             widened = await discover_contact_urls(row["organizer_website"] or row["hackathon_url"])
             if widened:
-                inserted += await _fetch_and_store_contacts(conn, str(row["id"]), widened, limit=4)
+                more, _harvested2 = await _fetch_and_store_contacts(conn, str(row["id"]), widened, limit=4)
+                inserted += more
+        if inserted == before:
+            # Free OSINT waterfall before any paid provider (free-first rule).
+            wf_inserted, _wf_report = await _waterfall_fallback(
+                conn, str(row["id"]), website_url=row["organizer_website"] or row["hackathon_url"]
+            )
+            inserted += wf_inserted
         if inserted == before:
             provider_inserted, _used = await _provider_fallback(
                 conn, str(row["id"]), website_url=row["organizer_website"] or row["hackathon_url"]
@@ -212,15 +269,24 @@ async def enrich_hackathon_by_id(conn, hackathon_id: str, *, fetch_pages: bool =
         return {"status": "not_found"}
     inserted = 0
     providers_used: list[str] = []
+    waterfall_report: dict[str, Any] = {}
     if fetch_pages:
         urls = [u for u in (row["hackathon_url"], row["organizer_website"], row["source_url"]) if u]
-        inserted += await _fetch_and_store_contacts(conn, hackathon_id, urls, limit=3)
+        page_inserted, _harvested = await _fetch_and_store_contacts(conn, hackathon_id, urls, limit=3)
+        inserted += page_inserted
         if inserted == 0:
             # Widen to the organizer's own site (sitemap + role links).
             from ..contact_discovery import discover_contact_urls
             widened = await discover_contact_urls(row["organizer_website"] or row["hackathon_url"])
             if widened:
-                inserted += await _fetch_and_store_contacts(conn, hackathon_id, widened, limit=4)
+                more, _harvested2 = await _fetch_and_store_contacts(conn, hackathon_id, widened, limit=4)
+                inserted += more
+        if inserted == 0:
+            # Free OSINT waterfall before any paid provider (free-first rule).
+            wf_inserted, waterfall_report = await _waterfall_fallback(
+                conn, hackathon_id, website_url=row["organizer_website"] or row["hackathon_url"]
+            )
+            inserted += wf_inserted
         if inserted == 0:
             provider_inserted, providers_used = await _provider_fallback(
                 conn, hackathon_id, website_url=row["organizer_website"] or row["hackathon_url"]
@@ -234,7 +300,8 @@ async def enrich_hackathon_by_id(conn, hackathon_id: str, *, fetch_pages: bool =
         verification_stats = await verify_contact_emails(conn, "hackathons", hackathon_id)
     quality = await recompute_hackathon_quality(conn, hackathon_id)
     return {"status": "completed", "contacts_inserted": inserted,
-            "providers_used": providers_used, "verification": verification_stats, **quality}
+            "providers_used": providers_used, "verification": verification_stats,
+            "osint_waterfall": waterfall_report, **quality}
 
 
 async def run_hackathon_pipeline(db_pool, run_id: Optional[str], *, fetch_pages: bool = True) -> dict[str, Any]:
