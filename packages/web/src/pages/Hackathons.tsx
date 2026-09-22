@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { useQuery, useMutation, useQueryClient } from 'react-query';
+import { useQuery, useMutation, useQueryClient, keepPreviousData } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 import { hackathons as hackathonsApi } from '@/lib/api';
 import { Hackathon } from '@/lib/types';
@@ -14,7 +14,9 @@ import { Pagination } from '@/components/ui/pagination';
 import { formatDate } from '@/lib/format';
 import { SavedViews } from '@/components/SavedViews';
 import { BulkActionBar, HeaderCheckbox, RowCheckbox, useBulkSelection } from '@/components/BulkActionBar';
-import { Trophy, Download, RefreshCw, Search, Eye, Sparkles, MapPin, Users } from 'lucide-react';
+import { Trophy, Download, RefreshCw, Search, Eye, Sparkles, MapPin, Users, UserCheck } from 'lucide-react';
+import { useAuthStore } from '@/stores/auth';
+import { admin } from '@/lib/api';
 
 export function statusBadgeClass(status: string): string {
   switch (status) {
@@ -61,32 +63,60 @@ const Hackathons: React.FC = () => {
     contact: contact || undefined,
   }), [page, search, status, state, mode, registration, predictedOnly, contact]);
 
-  const { data, isLoading, isError, error, refetch, isFetching } = useQuery(
-    ['hackathons', params],
-    () => hackathonsApi.list(params),
-    { staleTime: 15000, keepPreviousData: true },
-  );
+  const { data, isLoading, isError, error, refetch, isFetching } = useQuery({
+  queryKey: ['hackathons', params],
+  queryFn: () => hackathonsApi.list(params),
+  staleTime: 15000, placeholderData: keepPreviousData,
+});
 
   const rows: Hackathon[] = (data as any)?.data || [];
   const pagination = (data as any)?.pagination;
   const selection = useBulkSelection(rows);
+  // Selector form (not getState()) so the row re-renders when the role changes.
+  const isAdmin = useAuthStore((s) => s.user?.role === 'admin');
+  // Team members for the admin assign dialog (same source as the Leads page).
+  const { data: membersData } = useQuery({
+  queryKey: ['team-members'],
+  queryFn: () => admin.teamMembers(),
+  retry: false, staleTime: 60000,
+});
+  const members: Array<{ id: string; email: string; role: string }> = (membersData as any)?.members || [];
+  const [assignRow, setAssignRow] = useState<Hackathon | null>(null);
+  const [memberSearch, setMemberSearch] = useState('');
 
-  const bulkStatus = useMutation(
-    ({ ids, value }: { ids: string[]; value: string }) => hackathonsApi.bulkStatus(ids, 'outreach_status', value),
-    {
-      onSuccess: () => queryClient.invalidateQueries('hackathons'),
-      onError: (e: Error) => toast({ title: 'Bulk status failed', description: e.message, variant: 'error' }),
-    },
-  );
+  const assignMutation = useMutation({
+  mutationFn: ({ id, userId }: { id: string; userId: string | null }) => hackathonsApi.assign(id, userId),
+  onSuccess: () => {
+  toast({ title: 'Hackathon assigned', variant: 'success' });
+  setAssignRow(null);
+  queryClient.invalidateQueries({
+  queryKey: ['hackathons'],
+});
+  },
+  onError: (e: Error) => toast({ title: 'Assign failed', description: (e as Error).message, variant: 'error' }),
+});
 
-  const claimMutation = useMutation((id: string) => hackathonsApi.claim(id), {
-    onSuccess: () => {
-      toast({ title: 'Hackathon claimed', variant: 'success' });
-      queryClient.invalidateQueries('hackathons');
-      queryClient.invalidateQueries('my-leads-hackathons');
-    },
-    onError: (e: Error) => toast({ title: 'Claim failed', description: e.message, variant: 'error' }),
-  });
+  const bulkStatus = useMutation({
+  mutationFn: ({ ids, value }: { ids: string[]; value: string }) => hackathonsApi.bulkStatus(ids, 'outreach_status', value),
+  onSuccess: () => queryClient.invalidateQueries({
+  queryKey: ['hackathons'],
+}),
+  onError: (e: Error) => toast({ title: 'Bulk status failed', description: e.message, variant: 'error' }),
+});
+
+  const claimMutation = useMutation({
+  mutationFn: (id: string) => hackathonsApi.claim(id),
+  onSuccess: () => {
+  toast({ title: 'Hackathon claimed', variant: 'success' });
+  queryClient.invalidateQueries({
+  queryKey: ['hackathons'],
+});
+  queryClient.invalidateQueries({
+  queryKey: ['my-leads-hackathons'],
+});
+  },
+  onError: (e: Error) => toast({ title: 'Claim failed', description: e.message, variant: 'error' }),
+});
 
   const exportCsv = async () => {
     try {
@@ -194,12 +224,13 @@ const Hackathons: React.FC = () => {
                 <th className="table-th">Prize</th>
                 <th className="table-th">Status</th>
                 <th className="table-th">Contact</th>
+                <th className="table-th">Owner</th>
                 <th className="table-th"><span className="sr-only">Actions</span></th>
               </tr>
             </thead>
             <tbody>
               {rows.length === 0 ? (
-                <tr><td colSpan={9} className="p-4">
+                <tr><td colSpan={10} className="p-4">
                   <EmptyState
                     icon={Trophy}
                     title="No hackathons match these filters."
@@ -251,12 +282,37 @@ const Hackathons: React.FC = () => {
                     )}
                   </td>
                   <td className="table-td">
+                    {(() => {
+                      const claimed = (h as any).claimed_by_email || h.claimed_by;
+                      const assigned = (h as any).assigned_to_email || h.assigned_to;
+                      if (claimed && assigned && claimed !== assigned)
+                        return <span className="block max-w-[190px] truncate text-[12px] text-muted-foreground" title={`Claimed by ${claimed}, assigned to ${assigned}`}>Claimed by {String(claimed).split('@')[0]} · → {String(assigned).split('@')[0]}</span>;
+                      if (assigned)
+                        return <span className="block max-w-[170px] truncate text-[12px] text-muted-foreground" title={String(assigned)}>Assigned to {String(assigned).split('@')[0]}</span>;
+                      if (claimed)
+                        return <span className="block max-w-[170px] truncate text-[12px] text-muted-foreground" title={String(claimed)}>Claimed by {String(claimed).split('@')[0]}</span>;
+                      return <span className="text-[12px] text-muted-foreground/60">Unclaimed</span>;
+                    })()}
+                  </td>
+                  <td className="table-td">
                     <div className="flex items-center justify-end gap-1.5">
                       <button type="button" title="Open" onClick={() => navigate(`/hackathons/${h.id}`)} className="grid h-7 w-7 place-items-center rounded-full border border-border text-muted-foreground hover:text-foreground"><Eye className="h-3.5 w-3.5" /></button>
                       {!h.claimed_by && !h.assigned_to && (
-                        <Button variant="secondary" size="sm" disabled={claimMutation.isLoading} onClick={() => claimMutation.mutate(h.id)}>
+                        <Button variant="secondary" size="sm" disabled={claimMutation.isPending} onClick={() => claimMutation.mutate(h.id)}>
                           <Sparkles className="h-3.5 w-3.5" />Claim
                         </Button>
+                      )}
+                      {isAdmin && (
+                        <button
+                          type="button"
+                          title="Assign this hackathon to a team member"
+                          aria-label={`Assign ${h.name}`}
+                          onClick={() => setAssignRow(h)}
+                          className="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-border bg-surface px-3.5 py-[7px] text-[12px] font-semibold text-foreground shadow-sm transition-all hover:border-primary/50 hover:bg-primary-soft hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                        >
+                          <UserCheck className="h-3.5 w-3.5" />
+                          Assign
+                        </button>
                       )}
                     </div>
                   </td>
@@ -289,6 +345,29 @@ const Hackathons: React.FC = () => {
         <Users className="h-3.5 w-3.5" />
         Predicted rows are labelled and visually distinct from confirmed events; a prediction always carries its evidence on the record page.
       </p>
+
+      {assignRow && (
+        <div className="fixed inset-0 z-overlay grid place-items-center bg-black/50 p-4" onClick={() => setAssignRow(null)}>
+          <div className="w-full max-w-sm rounded-xl border border-border bg-surface p-4 shadow-float" onClick={(e) => e.stopPropagation()} role="dialog" aria-label="Assign hackathon">
+            <p className="mb-1 text-sm font-semibold">Assign to</p>
+            <p className="mb-3 truncate text-xs text-muted-foreground">{assignRow.name || 'hackathon'}</p>
+            <input value={memberSearch} onChange={(e) => setMemberSearch(e.target.value)} placeholder="Search member…" className="input mb-2" aria-label="Search member" />
+            <div className="max-h-64 space-y-1 overflow-auto">
+              {members.filter((m) => m.email.toLowerCase().includes(memberSearch.toLowerCase())).map((m) => (
+                <button key={m.id} onClick={() => assignMutation.mutate({ id: assignRow.id, userId: m.id })} className="flex w-full items-center gap-2 rounded-lg border border-border px-3 py-2 text-left text-sm hover:bg-accent">
+                  <span className="min-w-0 flex-1 truncate">{m.email}</span>
+                  <span className="text-xs capitalize text-muted-foreground">{m.role}</span>
+                </button>
+              ))}
+              {members.length === 0 && <p className="text-xs text-muted-foreground">No members found.</p>}
+            </div>
+            <div className="mt-3 flex justify-end gap-2">
+              <Button variant="outline" size="sm" onClick={() => setAssignRow(null)}>Cancel</Button>
+              <Button size="sm" loading={assignMutation.isPending} onClick={() => assignMutation.mutate({ id: assignRow.id, userId: null })}>Unassign</Button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

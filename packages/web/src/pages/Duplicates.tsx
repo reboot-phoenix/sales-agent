@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { useQuery, useMutation, useQueryClient } from 'react-query';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { leads as leadsApi } from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -42,36 +42,40 @@ const scoreBadge = (score: number) => {
 const Duplicates: React.FC = () => {
   const queryClient = useQueryClient();
   const { toast } = useToast();
-  const { data, isLoading, error, refetch } = useQuery('duplicates', () => leadsApi.getDuplicates(), {
-    // Duplicate detection runs during scraping, so this list goes stale on its
-    // own; it previously had neither live events nor polling.
-    staleTime: 15000,
-    refetchInterval: 20000,
-  });
+  const { data, isLoading, error, refetch } = useQuery({
+  queryKey: ['duplicates'],
+  queryFn: () => leadsApi.getDuplicates(),
+  // Duplicate detection runs during scraping, so this list goes stale on its
+  // own; it previously had neither live events nor polling.
+  staleTime: 15000,
+  refetchInterval: 20000,
+});
 
   useSSE('/sse/token', (event) => {
     if (isLeadLifecycleEvent(event.type)) refetch();
   });
 
-  const mergeMutation = useMutation(
-    ({ leadId, mergeIntoId }: { leadId: string; mergeIntoId: string }) =>
+  const mergeMutation = useMutation({
+  mutationFn: ({ leadId, mergeIntoId }: { leadId: string; mergeIntoId: string }) =>
       leadsApi.mergeDuplicate(leadId, mergeIntoId),
-    {
-      onSuccess: () => {
-        queryClient.invalidateQueries('duplicates');
-        queryClient.invalidateQueries('leads');
-        toast({ title: 'Leads merged', variant: 'success' });
-      },
-      onError: (err) => toast({ title: 'Merge failed', description: (err as Error).message, variant: 'error' }),
-    },
-  );
+  onSuccess: () => {
+  queryClient.invalidateQueries({
+  queryKey: ['duplicates'],
+});
+  queryClient.invalidateQueries({
+  queryKey: ['leads'],
+});
+  toast({ title: 'Leads merged', variant: 'success' });
+  },
+  onError: (err) => toast({ title: 'Merge failed', description: (err as Error).message, variant: 'error' }),
+});
 
   const handleMerge = (leadId: string, mergeIntoId: string) => {
     setPendingMerge({ leadId, mergeIntoId });
   };
 
   const confirmMerge = () => {
-    if (!pendingMerge || mergeMutation.isLoading) return;
+    if (!pendingMerge || mergeMutation.isPending) return;
     mergeMutation.mutate(pendingMerge, { onSuccess: () => setPendingMerge(null) });
   };
 
@@ -90,12 +94,12 @@ const Duplicates: React.FC = () => {
     <div className="space-y-phi4">
       <ConfirmDialog
         open={!!pendingMerge}
-        onClose={() => (mergeMutation.isLoading ? null : setPendingMerge(null))}
+        onClose={() => (mergeMutation.isPending ? null : setPendingMerge(null))}
         onConfirm={confirmMerge}
         title="Merge these leads?"
         description="Outreach history, drafts and verification logs move to the surviving lead. The merged lead is deleted. This cannot be undone."
         confirmLabel="Merge leads"
-        loading={mergeMutation.isLoading}
+        loading={mergeMutation.isPending}
       />
       <PageHeader
         eyebrow="Insights"
@@ -156,7 +160,7 @@ const Duplicates: React.FC = () => {
               <div className="flex flex-wrap items-center gap-2 border-t border-border bg-muted/30 px-5 py-3">
                 <Button
                   onClick={() => handleMerge(dup.lead_id, dup.duplicate_of_id)}
-                  disabled={mergeMutation.isLoading}
+                  disabled={mergeMutation.isPending}
                   size="sm"
                   variant="default"
                 >
@@ -165,7 +169,7 @@ const Duplicates: React.FC = () => {
                 </Button>
                 <Button
                   onClick={() => handleMerge(dup.lead_id, dup.lead_id)}
-                  disabled={mergeMutation.isLoading}
+                  disabled={mergeMutation.isPending}
                   size="sm"
                   variant="outline"
                 >

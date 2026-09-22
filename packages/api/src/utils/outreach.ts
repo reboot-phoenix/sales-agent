@@ -373,7 +373,11 @@ export function rankAssessments(assessments: OutreachAssessment[]): OutreachAsse
 
 /** SQL fragment selecting the contacts an assessment needs, per domain. */
 export const CONTACT_SELECT: Record<OutreachDomain, string> = {
-  jobs: `SELECT l.id AS entity_id, hc.* FROM leads l
+  jobs: `SELECT l.id AS entity_id, hc.*,
+             CASE WHEN hc.email_verified IS TRUE THEN 'verified' ELSE 'unverified' END AS verification_status,
+             CASE WHEN hc.confidence_score >= 80 THEN 'A'
+                  WHEN hc.confidence_score >= 55 THEN 'B' ELSE 'C' END AS verification_grade
+            FROM leads l
            JOIN hr_contacts hc ON hc.id = l.hr_contact_id
           WHERE l.id = ANY($1::uuid[])`,
   hackathons: `SELECT hackathon_id AS entity_id, * FROM hackathon_contacts

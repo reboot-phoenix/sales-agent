@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { useQuery, useMutation, useQueryClient } from 'react-query';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { colleges as collegesApi } from '@/lib/api';
 import { College, DomainContact } from '@/lib/types';
 import { useToast } from '@/components/ui/toast';
@@ -59,24 +59,35 @@ const CollegeDetail: React.FC = () => {
   const { toast } = useToast();
   const [note, setNote] = useState('');
 
-  const { data, isLoading, isError, error, refetch } = useQuery(['college', id], () => collegesApi.get(id), { enabled: !!id });
+  const { data, isLoading, isError, error, refetch } = useQuery({
+  queryKey: ['college', id],
+  queryFn: () => collegesApi.get(id),
+  enabled: !!id,
+});
 
-  const enrich = useMutation(() => collegesApi.enrich(id), {
-    onSuccess: () => toast({ title: 'Enrichment started', description: 'TPO / principal / placement pages are being scanned.', variant: 'success' }),
-    onError: (e: Error) => toast({ title: 'Enrichment failed', description: e.message, variant: 'error' }),
-  });
-  const claim = useMutation(() => collegesApi.claim(id), {
-    onSuccess: () => { toast({ title: 'Claimed', variant: 'success' }); queryClient.invalidateQueries(['college', id]); },
-    onError: (e: Error) => toast({ title: 'Claim failed', description: e.message, variant: 'error' }),
-  });
-  const addNote = useMutation((body: string) => collegesApi.addNote(id, body), {
-    onSuccess: () => {
-      setNote('');
-      toast({ title: 'Note saved', variant: 'success' });
-      queryClient.invalidateQueries(['college', id]);
-    },
-    onError: (e: Error) => toast({ title: 'Could not save note', description: e.message, variant: 'error' }),
-  });
+  const enrich = useMutation({
+  mutationFn: () => collegesApi.enrich(id),
+  onSuccess: () => toast({ title: 'Enrichment started', description: 'TPO / principal / placement pages are being scanned.', variant: 'success' }),
+  onError: (e: Error) => toast({ title: 'Enrichment failed', description: e.message, variant: 'error' }),
+});
+  const claim = useMutation({
+  mutationFn: () => collegesApi.claim(id),
+  onSuccess: () => { toast({ title: 'Claimed', variant: 'success' }); queryClient.invalidateQueries({
+  queryKey: ['college', id],
+}); },
+  onError: (e: Error) => toast({ title: 'Claim failed', description: e.message, variant: 'error' }),
+});
+  const addNote = useMutation({
+  mutationFn: (body: string) => collegesApi.addNote(id, body),
+  onSuccess: () => {
+  setNote('');
+  toast({ title: 'Note saved', variant: 'success' });
+  queryClient.invalidateQueries({
+  queryKey: ['college', id],
+});
+  },
+  onError: (e: Error) => toast({ title: 'Could not save note', description: e.message, variant: 'error' }),
+});
 
   if (isLoading) return <PageLoader label="Loading college profile..." />;
   if (isError || !data) return <ErrorState title="Error loading college" message={(error as Error)?.message || 'Not found'} onRetry={() => refetch()} />;
@@ -108,9 +119,9 @@ const CollegeDetail: React.FC = () => {
                 <ExternalLink className="h-4 w-4" />Website
               </a>
             )}
-            <Button variant="outline" size="sm" onClick={() => enrich.mutate()} loading={enrich.isLoading}><RefreshCw className="h-4 w-4" />Enrich contacts</Button>
+            <Button variant="outline" size="sm" onClick={() => enrich.mutate()} loading={enrich.isPending}><RefreshCw className="h-4 w-4" />Enrich contacts</Button>
             {!c.claimed_by && !c.assigned_to && (
-              <Button size="sm" onClick={() => claim.mutate()} loading={claim.isLoading}>Claim</Button>
+              <Button size="sm" onClick={() => claim.mutate()} loading={claim.isPending}>Claim</Button>
             )}
           </>
         }
@@ -223,7 +234,7 @@ const CollegeDetail: React.FC = () => {
           <h2 className="mb-3 text-sm font-semibold">Notes</h2>
           <div className="mb-3 flex gap-2">
             <input value={note} onChange={(e) => setNote(e.target.value)} placeholder="Add a note…" className="input flex-1" />
-            <Button size="sm" disabled={!note.trim() || addNote.isLoading} onClick={() => addNote.mutate(note.trim())}>Save</Button>
+            <Button size="sm" disabled={!note.trim() || addNote.isPending} onClick={() => addNote.mutate(note.trim())}>Save</Button>
           </div>
           <ul className="space-y-2">
             {notes.map((n: any) => (

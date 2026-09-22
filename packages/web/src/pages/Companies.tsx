@@ -1,5 +1,5 @@
 import React, { useState, useMemo } from 'react';
-import { useQuery, useMutation, useQueryClient } from 'react-query';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 import { useAuthStore } from '@/stores/auth';
 import { companies as companiesApi, Company } from '@/lib/api';
@@ -55,49 +55,57 @@ const Companies: React.FC = () => {
 
   const isAdmin = user?.role === 'admin';
 
-  const { data, isLoading, isError, error, refetch } = useQuery(
-    ['companies', pagination.pageIndex + 1, PAGE_SIZE, globalFilter],
-    () => companiesApi.list({ page: pagination.pageIndex + 1, limit: PAGE_SIZE, search: globalFilter || undefined }),
-    // These pages had no live wiring at all: a scrape or enrichment elsewhere
-    // left them showing whatever was loaded at mount until a manual reload.
-    { staleTime: 15000, refetchInterval: 20000, onError: () => {} },
-  );
+  const { data, isLoading, isError, error, refetch } = useQuery({
+  queryKey: ['companies', pagination.pageIndex + 1, PAGE_SIZE, globalFilter],
+  queryFn: () => companiesApi.list({ page: pagination.pageIndex + 1, limit: PAGE_SIZE, search: globalFilter || undefined }),
+  // These pages had no live wiring at all: a scrape or enrichment elsewhere
+  // left them showing whatever was loaded at mount until a manual reload.
+  // (v5 dropped onError from useQuery; errors surface via isError below.)
+  staleTime: 15000,
+  refetchInterval: 20000,
+});
 
   useSSE('/sse/token', (event) => {
     if (isLeadLifecycleEvent(event.type)) refetch();
   });
 
-  const createMutation = useMutation((data: Partial<Company>) => companiesApi.create(data), {
-    onSuccess: () => {
-      queryClient.invalidateQueries('companies');
-      setShowForm(false);
-      setFormData(EMPTY_FORM);
-      toast({ title: 'Company created', variant: 'success' });
-    },
-    onError: (err) => toast({ title: 'Failed to create company', description: (err as Error).message, variant: 'error' }),
-  });
+  const createMutation = useMutation({
+  mutationFn: (data: Partial<Company>) => companiesApi.create(data),
+  onSuccess: () => {
+  queryClient.invalidateQueries({
+  queryKey: ['companies'],
+});
+  setShowForm(false);
+  setFormData(EMPTY_FORM);
+  toast({ title: 'Company created', variant: 'success' });
+  },
+  onError: (err) => toast({ title: 'Failed to create company', description: (err as Error).message, variant: 'error' }),
+});
 
-  const updateMutation = useMutation(
-    ({ id, data }: { id: string; data: Partial<Company> }) => companiesApi.update(id, data),
-    {
-      onSuccess: () => {
-        queryClient.invalidateQueries('companies');
-        setEditingId(null);
-        setShowForm(false);
-        setFormData(EMPTY_FORM);
-        toast({ title: 'Company updated', variant: 'success' });
-      },
-      onError: (err) => toast({ title: 'Failed to update company', description: (err as Error).message, variant: 'error' }),
-    },
-  );
+  const updateMutation = useMutation({
+  mutationFn: ({ id, data }: { id: string; data: Partial<Company> }) => companiesApi.update(id, data),
+  onSuccess: () => {
+  queryClient.invalidateQueries({
+  queryKey: ['companies'],
+});
+  setEditingId(null);
+  setShowForm(false);
+  setFormData(EMPTY_FORM);
+  toast({ title: 'Company updated', variant: 'success' });
+  },
+  onError: (err) => toast({ title: 'Failed to update company', description: (err as Error).message, variant: 'error' }),
+});
 
-  const deleteMutation = useMutation((id: string) => companiesApi.remove(id), {
-    onSuccess: () => {
-      queryClient.invalidateQueries('companies');
-      toast({ title: 'Company deleted', variant: 'success' });
-    },
-    onError: (err) => toast({ title: 'Failed to delete company', description: (err as Error).message, variant: 'error' }),
-  });
+  const deleteMutation = useMutation({
+  mutationFn: (id: string) => companiesApi.remove(id),
+  onSuccess: () => {
+  queryClient.invalidateQueries({
+  queryKey: ['companies'],
+});
+  toast({ title: 'Company deleted', variant: 'success' });
+  },
+  onError: (err) => toast({ title: 'Failed to delete company', description: (err as Error).message, variant: 'error' }),
+});
 
   const companyData = (data as any) ?? { data: [], pagination: { page: 1, limit: 50, total: 0, pages: 0 } };
   const companies: Company[] = companyData.data || [];
@@ -384,7 +392,7 @@ const Companies: React.FC = () => {
             <Textarea value={formData.about} onChange={(e) => setFormData({ ...formData, about: e.target.value })} rows={3} placeholder="Short description of the company" />
           </div>
           <div className="flex gap-2 md:col-span-2">
-            <Button type="submit" loading={createMutation.isLoading || updateMutation.isLoading}>
+            <Button type="submit" loading={createMutation.isPending || updateMutation.isPending}>
               {editingId ? 'Update Company' : 'Create Company'}
             </Button>
             <Button
@@ -411,7 +419,7 @@ const Companies: React.FC = () => {
         title="Delete company"
         description={`Are you sure you want to delete "${deleteTarget?.name}"? This action cannot be undone.`}
         confirmLabel="Delete"
-        loading={deleteMutation.isLoading}
+        loading={deleteMutation.isPending}
       />
     </div>
   );

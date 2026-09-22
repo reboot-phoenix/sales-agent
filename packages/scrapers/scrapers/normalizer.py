@@ -1782,17 +1782,13 @@ async def _normalize_worker(
         except asyncpg.PostgresError as e:
             logger.error(f"PostgreSQL error in normalizer: {e}")
             try:
-                if raw_msg is not None:
-                    await ack(redis_client, "raw_leads_queue:requests", raw_msg)
-                await requeue_or_dlq(redis_client, "raw_leads_queue:requests", raw_data)
+                await requeue_or_dlq(redis_client, "raw_leads_queue:requests", raw_data, raw_msg)
             except Exception:  # noqa: BLE001
                 pass
         except Exception as e:
             logger.error(f"Unexpected error in normalizer: {e}")
             try:
-                if raw_msg is not None:
-                    await ack(redis_client, "raw_leads_queue:requests", raw_msg)
-                await requeue_or_dlq(redis_client, "raw_leads_queue:requests", raw_data)
+                await requeue_or_dlq(redis_client, "raw_leads_queue:requests", raw_data, raw_msg)
             except Exception:  # noqa: BLE001
                 pass
 

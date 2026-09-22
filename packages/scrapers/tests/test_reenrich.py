@@ -17,7 +17,7 @@ class FakeConn:
 def test_candidate_sql_targets_contactless_unverified_stale_rows_with_a_cooldown():
     sql = reenrich._candidate_sql("colleges")
     assert "FROM colleges t" in sql
-    assert "contact_email IS NULL AND t.contact_phone IS NULL AND t.contact_linkedin IS NULL" in sql
+    assert "t.tpo_email IS NULL AND t.tpo_phone IS NULL AND t.official_email IS NULL" in sql
     assert "outreach_readiness IN ('NEEDS_ENRICHMENT', 'INSUFFICIENT_DATA')" in sql
     assert "freshness_category = 'stale'" in sql
     assert "NOT EXISTS" in sql and "enrichment_runs" in sql
@@ -25,6 +25,7 @@ def test_candidate_sql_targets_contactless_unverified_stale_rows_with_a_cooldown
     # Upcoming events are worked first; institutions by completeness.
     hack = reenrich._candidate_sql("hackathons")
     assert "registration_deadline >= NOW()" in hack
+    assert "t.contact_email IS NULL AND t.contact_phone IS NULL AND t.contact_linkedin IS NULL" in hack
     assert "completeness_score DESC" in sql
 
 

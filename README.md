@@ -102,7 +102,9 @@ Then open **http://localhost:5173** and sign in with the [admin credentials](#lo
 |---|---|---|
 | **Web CRM** | http://localhost:5173 | React 18 + Vite + Tailwind — the main UI (nginx serves it, proxies `/api` and `/ws` to the API) |
 | **API** | http://localhost:3000 | Fastify (Node 20) — auth, leads, companies, contacts, dashboard, webhooks |
-| **API docs (health)** | http://localhost:3000/health | Health check |
+| **API health probes** | http://localhost:3000/health | Aggregate report with per-dependency (DB/Redis) detail, always 200 |
+| **API readiness** | http://localhost:3000/readiness | 503 until Postgres + Redis answer — use this to gate traffic |
+| **API liveness** | http://localhost:3000/liveness | Dependency-free process check — use this for restart decisions |
 | **Workers** | http://localhost:8000/health | FastAPI (Python 3.12) — scraper fleet, enrichment, verification, AI drafts |
 | **n8n** | http://localhost:5678 | Workflow orchestration (login: user from `.env`, default `admin` / `change-this-password`) |
 | **Reacher** | http://localhost:5050 | Self-hosted email verification |
@@ -120,8 +122,8 @@ Default DB credentials (local dev only): `postgres` / `postgres`.
 Step 1  Scrape       Scraper fleet (Lever, Greenhouse, Adzuna, Arbeitnow, GitHub internship lists…)
                      → raw leads → Postgres              [n8n cron or manual trigger]
 
-Step 2  Enrich       OSINT enrichment (Snov.io, ContactOut — bring your own keys in Settings)
-                     → company + HR contact data         [per-row button in UI]
+Step 2  Enrich       Free-first OSINT waterfall (see below) — paid vendors optional
+                     → company + HR/TPO/organizer data   [per-row button in UI]
 
 Step 3  Verify       Email/WhatsApp verification (Reacher self-hosted)
                      → verification_log                  [per-row button in UI]
@@ -134,6 +136,28 @@ Step 5  Send         Resend / Brevo email or WhatsApp
 ```
 
 Steps 2–5 are **on-demand per lead** from the CRM — click a lead, run the step, see the result.
+
+### Contact Enrichment — the free-first waterfall (all three armies)
+
+Every domain (jobs, hackathons, colleges) enriches through the same ordering: **free
+public sources first, paid vendors only as a last resort**, and no contact is ever
+stored without passing a live verification gate:
+
+| Layer | What it does | Applies to |
+|---|---|---|
+| 1. Official pages | Contact/placement/organizer pages + JSON-LD structured data; widened by the site's own sitemap and role links | all |
+| 2. Role inboxes | Probes `tpo@`, `placements@`, `principal@`, `info@`, … on the entity's own domain — **every candidate SMTP-verified, hard rejections dropped** | colleges, hackathons |
+| 3. Pattern inference | Learns the institution's real address format from a sample it published, builds the named officer's personal address, **stores only explicit SMTP acceptances** | colleges (TPO/principal), jobs (HR) |
+| 4. SERP dorks | Keyless multi-engine search for addresses the institution published on indexed pages | all |
+| 5. Archives | Wayback Machine versions of the entity's own contact pages | colleges, hackathons, jobs |
+| 6. First-party mining | GitHub public-commit emails, crt.sh certificates, Gravatar existence oracle | jobs |
+| 7. Hiring-team discovery | ATS APIs + career pages + dorks find *who* hires when the posting has no name | jobs |
+| 8. Paid waterfall | Only when everything above found nothing AND a vendor key is configured; cheapest first, stops at first hit | opt-in |
+
+Verdicts are recorded per contact (`verified` / `catch_all` / `unknown` / `failed`) with
+the MX/SMTP evidence, method, source URL and confidence score — a plausible-looking
+address that the mail server rejected is **never stored**, and nothing can overwrite
+an already-verified contact.
 
 ### CRM Pages
 **Dashboard** (stats) · **Leads** (filter/score/pipeline) · **Lead Detail** (full record + actions) · **Companies** · **Contacts** · **Duplicates** · **Analytics** · **Settings** (store your Snov.io / ContactOut / Resend keys — encrypted at rest with AES-256-GCM)
@@ -176,7 +200,7 @@ daily scrape (03:00 UTC) → normalise → enrich → verify → draft      [aut
 | Key you paste | What starts working, unprompted |
 |---|---|
 | `Gemini` | Drafts become AI-written and personalised per lead instead of falling back to the generic template. Applies to drafts generated from then on. |
-| `Snov.io` | Enrichment tries Snov.io first for an HR email before the free OSINT cascade. Costs credits per lookup. Needs the Email Finder entitlement on the account. |
+| `Snov.io` | Optional accelerator ONLY — the free OSINT waterfall always runs first and paid vendors fire just when it finds nothing. Costs credits per lookup. Needs the Email Finder entitlement on the account. |
 | `Resend` (`re_…`) or `Brevo` (`keysib-…`) | Sending works when you click Send / bulk Send. Nothing mails itself — see below. |
 | `Adzuna` (`ADZUNA_APP_ID`/`KEY`), `Jooble` | Those two scrapers return real results on the next scheduled run instead of being skipped as unconfigured. |
 | `Reddit` (`REDDIT_CLIENT_ID`/`SECRET`) | Reddit job-postings scraping starts contributing leads on the next run (uses `praw`). |
@@ -349,6 +373,7 @@ CI (`.github/workflows/ci.yml`) runs these plus Docker image builds (pushed to `
 - Change `N8N_BASIC_AUTH_PASSWORD` and both secrets before any real use
 - Postgres/Redis ports are exposed for local dev only — don't do that in prod
 - `/api/metrics`, `/api/integrity` and all DLQ routes are admin-gated; metrics emit aggregates only (no emails, names or lead ids)
+- Strict CSP on the web app: fully self-origin (fonts are bundled — no Google Fonts dependency), `script-src 'self'` with no `unsafe-inline`/`unsafe-eval`; the one `style-src 'unsafe-inline'` is required by Tailwind runtime utilities. Delivered identically by nginx (docker) and `_headers` (Cloudflare Pages), so the app works behind either.
 
 ---
 

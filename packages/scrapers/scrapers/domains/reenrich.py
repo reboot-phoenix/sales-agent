@@ -30,6 +30,12 @@ EnrichOne = Callable[..., Awaitable[dict[str, Any]]]
 # map — never from a caller.
 DOMAIN_TABLES: dict[str, str] = {"hackathons": "hackathons", "colleges": "colleges"}
 
+# Contact cols differ per domain.
+_CONTACT_NULL_CHECK: dict[str, str] = {
+    "hackathons": "(t.contact_email IS NULL AND t.contact_phone IS NULL AND t.contact_linkedin IS NULL)",
+    "colleges": "(t.tpo_email IS NULL AND t.tpo_phone IS NULL AND t.official_email IS NULL)",
+}
+
 # Domain-specific staleness window and best-available URL expression.
 _STALE_WINDOW: dict[str, str] = {"hackathons": "10 days", "colleges": "120 days"}
 _URL_EXPR: dict[str, str] = {
@@ -64,13 +70,14 @@ def _candidate_sql(domain: str) -> str:
     table = DOMAIN_TABLES[domain]
     stale = _STALE_WINDOW[domain]
     url_expr = _URL_EXPR[domain]
+    contact_null = _CONTACT_NULL_CHECK[domain]
     return f"""
         SELECT t.id, t.name, t.outreach_readiness, t.enrichment_status, t.freshness_category
           FROM {table} t
          WHERE t.is_active
            AND {url_expr} IS NOT NULL
            AND (
-                 (t.contact_email IS NULL AND t.contact_phone IS NULL AND t.contact_linkedin IS NULL)
+                 {contact_null}
               OR t.outreach_readiness IN ('NEEDS_ENRICHMENT', 'INSUFFICIENT_DATA')
               OR t.enrichment_status IN ('NEW', 'NEEDS_ENRICHMENT', 'FAILED')
               OR t.freshness_category = 'stale'

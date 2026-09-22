@@ -22,6 +22,9 @@ export function errorHandler(error: FastifyError, _request: FastifyRequest, repl
 
   reply.status(statusCode).send({
     error: safeMessage,
+    // Request ID ties a user-reported failure to the exact log line; Fastify
+    // generates one per request (or honours an upstream x-request-id).
+    request_id: _request.id,
     ...(statusCode === 400 && error.cause ? { details: (error.cause as { issues?: unknown }).issues || undefined } : {}),
     ...(process.env.NODE_ENV === 'development' && statusCode === 500 ? { stack: error.stack } : {}),
   });

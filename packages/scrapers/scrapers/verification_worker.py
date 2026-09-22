@@ -369,9 +369,7 @@ async def consume_verification_queue(
         except Exception as e:
             logger.error(f"Verification consumer error: {e}", exc_info=True)
             try:
-                if raw_msg is not None:
-                    await ack(redis_client, "verification_queue:requests", raw_msg)
-                await requeue_or_dlq(redis_client, "verification_queue:requests", payload)
+                await requeue_or_dlq(redis_client, "verification_queue:requests", payload, raw_msg)
             except Exception as dlq_err:  # noqa: BLE001
                 # The job was already acked out of :processing, so a failed
                 # requeue/DLQ write leaves no copy anywhere. Surface it at ERROR

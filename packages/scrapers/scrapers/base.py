@@ -32,8 +32,6 @@ try:
 except Exception:
     _FREE_PROXY_CLIENT = None
 
-logger = logging.getLogger(__name__)
-
 _robot_checker: RobotsChecker | None = None
 
 
@@ -336,8 +334,8 @@ class BaseScraper(abc.ABC):
 
         Checks robots.txt compliance before scraping (SRS §13).
         """
-        if self._circuit_breaker.is_open():
-            self._circuit_breaker.logger.warning(f"Circuit breaker open for {self.source_name}, skipping")
+        if await self._circuit_breaker.is_open_async():
+            self._logger.warning(f"Circuit breaker open for {self.source_name}, skipping")
             return []
 
         base_url = getattr(self, "API_URL", None) or getattr(self, "BASE_URL", None)
@@ -352,12 +350,12 @@ class BaseScraper(abc.ABC):
         while attempt < max_attempts:
             try:
                 leads = await asyncio.wait_for(self.scrape(), timeout=self.scrape_timeout_seconds)
-                self._circuit_breaker.record_success()
+                await self._circuit_breaker.record_success_async()
                 return leads
             except (asyncio.TimeoutError, aiohttp.ClientError, ScrapingError) as e:
                 attempt += 1
                 if attempt >= max_attempts:
-                    self._circuit_breaker.record_failure(str(e))
+                    await self._circuit_breaker.record_failure_async(str(e))
                     self._logger.error(f"Scrape failed for {self.source_name} after {max_attempts} attempts: {e}")
                     return []
                 wait = self._jittered_wait(attempt)
@@ -366,7 +364,7 @@ class BaseScraper(abc.ABC):
                 )
                 await asyncio.sleep(wait)
             except Exception as e:
-                self._circuit_breaker.record_failure(str(e))
+                await self._circuit_breaker.record_failure_async(str(e))
                 self._logger.error(f"Scrape failed for {self.source_name}: {e}")
                 return []
 

@@ -22,6 +22,7 @@ import re
 from typing import Any, Optional
 
 from .. import contact_discovery
+from ..contact_waterfall import EMAIL_IN_TEXT
 from ..entity_resolution import contact_identity
 from ..normalize import clean_text, extract_domain
 from ..quality import (
@@ -396,6 +397,13 @@ async def enrich_college(conn, college_id: str, *, fetch_pages: bool = True) -> 
     fetched = 0
     errors: list[str] = []
     providers_used: list[str] = []
+    # Real addresses seen on the college's own pages feed the waterfall's
+    # pattern-inference layer (a learned format beats a guessed one).
+    harvested_emails: list[str] = [e for e in (
+        (c.get("email") or "").strip() for c in await conn.fetch(
+            "SELECT email FROM college_contacts WHERE college_id=$1 AND email IS NOT NULL",
+            college_id,
+        )) if e]
     urls = candidate_contact_urls(college.get("website_url"))
     if fetch_pages and urls:
         # Widen beyond guessable paths: the site's own sitemap and homepage links
@@ -412,6 +420,7 @@ async def enrich_college(conn, college_id: str, *, fetch_pages: bool = True) -> 
             if resp.status != 200 or not resp.text:
                 continue
             fetched += 1
+            harvested_emails.extend(EMAIL_IN_TEXT.findall(resp.text))
             contacts = extract_role_contacts(resp.text, url)
             for contact in contacts:
                 try:
@@ -421,6 +430,57 @@ async def enrich_college(conn, college_id: str, *, fetch_pages: bool = True) -> 
                     errors.append(f"{url} contact: {e}")
     elif not urls:
         errors.append("no official website on record — cannot enrich")
+
+    # Free OSINT waterfall — runs BEFORE any paid provider (free-first rule).
+    # Even when page extraction found a contact, the role-inbox layer adds the
+    # placement-cell mailboxes pages don't always print, and the pattern layer
+    # builds the TPO's personal address from any real sample we harvested.
+    waterfall_report: dict[str, Any] = {}
+    if fetch_pages and college.get("website_url"):
+        try:
+            from ..contact_waterfall import run_contact_waterfall
+            wf = await run_contact_waterfall(
+                college.get("website_url"),
+                person_name=college.get("tpo_name") or college.get("principal_name"),
+                known_emails=harvested_emails,
+                role_limit=6,
+            )
+            waterfall_report = wf.get("report", {})
+            for cand in wf.get("candidates", []):
+                if not cand.get("email"):
+                    continue
+                email_local = (cand["email"] or "").split("@", 1)[0].lower()
+                role_category = "other"
+                for rc, needle in (("tpo", "tpo"), ("placement_head", "placement"),
+                                   ("principal", "principal"), ("director", "director"),
+                                   ("dean", "dean")):
+                    if needle in email_local:
+                        role_category = rc
+                        break
+                contact = {
+                    "email": cand["email"],
+                    "full_name": None,  # a shared/role inbox is not a person
+                    "role_category": role_category,
+                    "contact_source": f"osint_waterfall_{cand.get('layer', 'unknown')}",
+                    "source_url": college.get("website_url"),
+                    "confidence_score": cand.get("confidence", 40),
+                    # Only an explicit SMTP acceptance may be stored pre-verified;
+                    # anything else enters as unverified and is re-checked below.
+                    "verification_status": "verified" if cand.get("verified") else "unverified",
+                }
+                try:
+                    if await upsert_college_contact(conn, college_id, contact):
+                        inserted += 1
+                except Exception as e:  # noqa: BLE001
+                    errors.append(f"waterfall contact: {e}")
+            # The waterfall already SMTP-verified every candidate it returned;
+            # record those verdicts so the verify pass does not re-probe them.
+            if inserted:
+                from ..verification import record_waterfall_verdicts
+                await record_waterfall_verdicts(conn, "colleges", college_id, wf)
+        except Exception as e:  # noqa: BLE001 — the waterfall must never fail a run
+            errors.append(f"waterfall: {e}")
+
     # Last resort: credentialed providers. They only run when configured, and their
     # output goes through the same upsert (provenance, dedupe, no downgrades).
     if fetch_pages and inserted == 0:
@@ -455,11 +515,13 @@ async def enrich_college(conn, college_id: str, *, fetch_pages: bool = True) -> 
         run_id, "completed" if not errors else "partial", inserted,
         json.dumps({"pages_fetched": fetched, "candidate_urls": len(urls),
                     "providers_used": providers_used,
+                    "osint_waterfall": waterfall_report,
                     "verification": verification_stats}),
         json.dumps(errors[:20]) if errors else None,
     )
     return {"status": "completed", "pages_fetched": fetched, "contacts_inserted": inserted,
             "providers_used": providers_used, "verification": verification_stats,
+            "osint_waterfall": waterfall_report,
             "errors": errors[:5], **quality}
 
 

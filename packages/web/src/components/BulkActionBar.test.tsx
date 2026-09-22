@@ -6,7 +6,7 @@ import React from 'react';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { ToastProvider } from '@/components/ui/toast';
 import { BulkActionBar, HeaderCheckbox, useBulkSelection } from '@/components/BulkActionBar';
-import { QueryClient, QueryClientProvider } from 'react-query';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
 function Harness({ rows, onClaim }: { rows: { id: string; name: string }[]; onClaim: jest.Mock }) {
   const selection = useBulkSelection(rows);

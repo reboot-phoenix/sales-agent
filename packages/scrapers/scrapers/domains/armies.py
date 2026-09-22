@@ -460,9 +460,7 @@ async def consume_army_queue(redis_client, db_pool) -> None:
         except Exception as e:  # noqa: BLE001
             logger.error("army consumer error: %s", e, exc_info=True)
             try:
-                if raw_msg is not None:
-                    await ack(redis_client, ARMY_QUEUE, raw_msg)
-                await requeue_or_dlq(redis_client, ARMY_QUEUE, payload)
+                await requeue_or_dlq(redis_client, ARMY_QUEUE, payload, raw_msg)
             except Exception:  # noqa: BLE001
                 pass
             await asyncio.sleep(5)

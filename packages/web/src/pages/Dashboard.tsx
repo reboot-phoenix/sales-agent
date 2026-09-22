@@ -1,5 +1,5 @@
 import React from 'react';
-import { useQuery, useMutation, useQueryClient } from 'react-query';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { dashboard, admin, CreditUsageResponse, RunLog } from '@/lib/api';
@@ -68,44 +68,74 @@ const Dashboard: React.FC = () => {
   const [live, setLive] = React.useState(true);
   const [feed, setFeed] = React.useState<FeedItem[]>([]);
   const feedKey = React.useRef(0);
-  const { data, isLoading, error, refetch } = useQuery('dashboard-stats', () => dashboard.stats(), { refetchInterval: live ? 15000 : false });
-  const { data: creditData } = useQuery('dashboard-credits', () => dashboard.credits(), { refetchInterval: live ? 15000 : false });
-  const { data: armyStatus } = useQuery('army-status', () => admin.armyStatus(), { refetchInterval: live ? 4000 : false });
+  const { data, isLoading, error, refetch } = useQuery({
+  queryKey: ['dashboard-stats'],
+  queryFn: () => dashboard.stats(),
+  refetchInterval: live ? 15000 : false,
+});
+  const { data: creditData } = useQuery({
+  queryKey: ['dashboard-credits'],
+  queryFn: () => dashboard.credits(),
+  refetchInterval: live ? 15000 : false,
+});
+  const { data: armyStatus } = useQuery({
+  queryKey: ['army-status'],
+  queryFn: () => admin.armyStatus(),
+  refetchInterval: live ? 4000 : false,
+});
   const user = useAuthStore((s) => s.user);
   const isAdmin = user?.role === 'admin';
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const { toast } = useToast();
-  const { data: runsData } = useQuery('dashboard-runs', () => admin.getRuns(8), { refetchInterval: live ? 15000 : false, enabled: isAdmin });
+  const { data: runsData } = useQuery({
+  queryKey: ['dashboard-runs'],
+  queryFn: () => admin.getRuns(8),
+  refetchInterval: live ? 15000 : false, enabled: isAdmin,
+});
 
-  const armyMutation = useMutation(() => admin.runArmy(), {
-    onSuccess: (d: any) => {
-      queryClient.invalidateQueries('army-status');
-      queryClient.invalidateQueries('dashboard-stats');
-      queryClient.invalidateQueries('dashboard-runs');
-      setArmyConfirmOpen(false);
-      toast({ title: 'Army deployed', description: 'Watch the Army Queues and live feed below for real-time progress.', variant: 'success' });
-    },
-    onError: (e) => toast({ title: 'Could not start army', description: (e as Error).message, variant: 'error' }),
-  });
+  const armyMutation = useMutation({
+  mutationFn: () => admin.runArmy(),
+  onSuccess: (d: any) => {
+  queryClient.invalidateQueries({
+  queryKey: ['army-status'],
+});
+  queryClient.invalidateQueries({
+  queryKey: ['dashboard-stats'],
+});
+  queryClient.invalidateQueries({
+  queryKey: ['dashboard-runs'],
+});
+  setArmyConfirmOpen(false);
+  toast({ title: 'Army deployed', description: 'Watch the Army Queues and live feed below for real-time progress.', variant: 'success' });
+  },
+  onError: (e) => toast({ title: 'Could not start army', description: (e as Error).message, variant: 'error' }),
+});
   const [armyConfirmOpen, setArmyConfirmOpen] = React.useState(false);
   const [armyStopConfirmOpen, setArmyStopConfirmOpen] = React.useState(false);
-  const stopMutation = useMutation(() => admin.stopArmy(), {
-    onSuccess: (d: any) => {
-      queryClient.invalidateQueries('army-status');
-      queryClient.invalidateQueries('dashboard-stats');
-      queryClient.invalidateQueries('dashboard-runs');
-      setArmyStopConfirmOpen(false);
-      toast({
-        title: d?.stopped === false ? 'Nothing to stop' : 'Army stopping',
-        description: d?.stopped === false
-          ? (d?.reason || 'No scrape activity is running.')
-          : `In-flight sources cancelling now;${d?.cleared_queued_jobs ? ` ${d.cleared_queued_jobs} queued jobs discarded;` : ''} discovered leads keep flowing through enrich → verify → draft.`,
-        variant: d?.stopped === false ? 'warning' : 'success',
-      });
-    },
-    onError: (e) => toast({ title: 'Could not stop army', description: (e as Error).message, variant: 'error' }),
+  const stopMutation = useMutation({
+  mutationFn: () => admin.stopArmy(),
+  onSuccess: (d: any) => {
+  queryClient.invalidateQueries({
+  queryKey: ['army-status'],
+});
+  queryClient.invalidateQueries({
+  queryKey: ['dashboard-stats'],
+});
+  queryClient.invalidateQueries({
+  queryKey: ['dashboard-runs'],
+});
+  setArmyStopConfirmOpen(false);
+  toast({
+  title: d?.stopped === false ? 'Nothing to stop' : 'Army stopping',
+  description: d?.stopped === false
+  ? (d?.reason || 'No scrape activity is running.')
+  : `In-flight sources cancelling now;${d?.cleared_queued_jobs ? ` ${d.cleared_queued_jobs} queued jobs discarded;` : ''} discovered leads keep flowing through enrich → verify → draft.`,
+  variant: d?.stopped === false ? 'warning' : 'success',
   });
+  },
+  onError: (e) => toast({ title: 'Could not stop army', description: (e as Error).message, variant: 'error' }),
+});
   // Command palette "Run Full Army" routes here for confirmation instead of
   // firing blind — the palette has no dialog of its own.
   React.useEffect(() => {
@@ -118,8 +148,12 @@ const Dashboard: React.FC = () => {
     if (!live) return;
     if (isLeadLifecycleEvent(event.type) || EVENT_LABELS[event.type]) {
       refetch();
-      queryClient.invalidateQueries('dashboard-credits');
-      queryClient.invalidateQueries('army-status');
+      queryClient.invalidateQueries({
+  queryKey: ['dashboard-credits'],
+});
+      queryClient.invalidateQueries({
+  queryKey: ['army-status'],
+});
       feedKey.current += 1;
       const item = { key: feedKey.current, type: event.type, lead_id: event.lead_id as string | undefined, at: Date.now() };
       setFeed((f) => [item, ...f].slice(0, 20));
@@ -202,14 +236,14 @@ const Dashboard: React.FC = () => {
               </Button>
               {isAdmin && (
                 armyLive ? (
-                  <Button size="lg" variant="destructive" onClick={() => setArmyStopConfirmOpen(true)} loading={stopMutation.isLoading} disabled={stopMutation.isLoading}>
+                  <Button size="lg" variant="destructive" onClick={() => setArmyStopConfirmOpen(true)} loading={stopMutation.isPending} disabled={stopMutation.isPending}>
                     <Square className="h-5 w-5" />
-                    {stopMutation.isLoading ? 'Stopping…' : `Stop Army · ${queued}`}
+                    {stopMutation.isPending ? 'Stopping…' : `Stop Army · ${queued}`}
                   </Button>
                 ) : (
-                  <Button size="lg" onClick={() => setArmyConfirmOpen(true)} loading={armyMutation.isLoading} disabled={armyMutation.isLoading}>
+                  <Button size="lg" onClick={() => setArmyConfirmOpen(true)} loading={armyMutation.isPending} disabled={armyMutation.isPending}>
                     <Zap className="h-5 w-5" />
-                    {armyMutation.isLoading ? 'Deploying…' : 'Run Full Army'}
+                    {armyMutation.isPending ? 'Deploying…' : 'Run Full Army'}
                   </Button>
                 )
               )}
@@ -222,7 +256,7 @@ const Dashboard: React.FC = () => {
               description={`In-flight source scrapes cancel within seconds — already-scraped leads are kept, never discarded. Queued scrape jobs are discarded. ${queued} lead${queued === 1 ? '' : 's'} already in enrich → verify → draft keep processing to completion.`}
               confirmLabel="Stop Army"
               confirmVariant="destructive"
-              loading={stopMutation.isLoading}
+              loading={stopMutation.isPending}
             />
             <ConfirmDialog
               open={armyConfirmOpen}
@@ -232,7 +266,7 @@ const Dashboard: React.FC = () => {
               description={`Runs all configured sources, then re-enriches leads missing contacts. ${queued} lead${queued === 1 ? '' : 's'} currently in flight. Paid providers consume credits where keys exist. Track the live run in Army Queues below.`}
               confirmLabel="Run Army"
               confirmVariant="default"
-              loading={armyMutation.isLoading}
+              loading={armyMutation.isPending}
             />
             <div className={`flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-medium backdrop-blur transition-colors ${armyLive ? 'border-success/40 bg-success-soft text-success' : 'border-border bg-surface/50 text-muted-foreground'}`}>
               <Radio className={`h-3.5 w-3.5 ${armyLive ? 'animate-pulse' : ''}`} />
